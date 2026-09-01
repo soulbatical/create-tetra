@@ -6,7 +6,7 @@ import { promisify } from 'node:util';
 
 const run = promisify(execFile);
 
-const SCAFFOLDER = '@soulbatical/create-app';
+export const SCAFFOLDER = '@soulbatical/create-app';
 const SCAFFOLDER_BIN = 'create-soulbatical-app';
 
 export const directoryInUse = (path) => `De map ${path} bestaat al en is niet leeg.`;
@@ -43,19 +43,56 @@ async function writeSecretFile(path, content, { write: writeImpl = writeFile, re
 // told apart. The containment check below is what covers that: a userconfig
 // inside the current working directory is never a real user-level config, and is
 // exactly what a hostile repository would point at.
-export function resolveUserConfigPath({
+//
+// Refusing a setting silently is its own trap: npm then reads a different file
+// than the customer configured, and the install fails later with a bare 401. So
+// report which setting was dropped and why, and let the caller say it out loud.
+export function resolveUserConfig({
   env = process.env,
-  fallback = join(homedir(), '.npmrc'),
+  home = homedir(),
+  fallback = join(home, '.npmrc'),
   cwd = process.cwd(),
+  platform = process.platform,
 } = {}) {
   const configured = (env.NPM_CONFIG_USERCONFIG ?? '').trim();
-  if (configured === '') return fallback;
+  if (configured === '') return { path: fallback, ignored: null };
 
-  const expanded = configured.startsWith('~/') ? join(homedir(), configured.slice(2)) : configured;
-  if (!isAbsolute(expanded)) return fallback;
+  // npm's own parseField expands `~\` as well as `~/` on win32.
+  const tilde = platform === 'win32' ? /^~[/\\]/ : /^~\//;
+  const expanded = tilde.test(configured) ? join(home, configured.slice(2)) : configured;
+
+  // npm resolves a relative path against its cwd, which is the directory we
+  // deliberately do not let decide this. Fall back rather than follow.
+  if (!isAbsolute(expanded)) return { path: fallback, ignored: { value: configured, reason: 'relative' } };
 
   const inCwd = resolvePathname(expanded).startsWith(`${resolvePathname(cwd)}${sep}`);
-  return inCwd ? fallback : expanded;
+  if (inCwd) return { path: fallback, ignored: { value: configured, reason: 'in-cwd' } };
+
+  return { path: expanded, ignored: null };
+}
+
+export function resolveUserConfigPath(options = {}) {
+  return resolveUserConfig(options).path;
+}
+
+const userConfigNotice = ({ value, reason }, path) => {
+  const why = reason === 'relative'
+    ? 'dat pad is relatief en zou van je huidige map afhangen'
+    : 'dat pad ligt in je huidige map en is dus geen persoonlijke configuratie';
+  return `Let op: NPM_CONFIG_USERCONFIG staat op ${value}; ${why}.\nJe registry-token gaat naar ${path}.\n`;
+};
+
+// npx hands us npm's resolution of whatever directory the customer was standing
+// in as npm_config_* variables, and npm reads those back with a higher priority
+// than the config file we point it at. Passing them through would let that
+// directory choose the registry and the credential file for both installs, so
+// the whole family goes and only what we set explicitly remains.
+function npmEnvironment(base, overrides) {
+  const environment = { ...base };
+  for (const key of Object.keys(environment)) {
+    if (/^npm_config_/i.test(key)) delete environment[key];
+  }
+  return { ...environment, ...overrides };
 }
 
 // This is the one file create-tetra touches that it does not own. It may hold
@@ -150,6 +187,11 @@ async function ensureEnvIsIgnored(projectPath, { read = readFile, write: writeIm
   await writeImpl(path, `${current}${separator}.env\n`);
 }
 
+const lastLine = (text) => {
+  const lines = String(text ?? '').split('\n').map((line) => line.trim()).filter((line) => line !== '');
+  return lines.at(-1) ?? null;
+};
+
 export async function installProject({
   projectPath,
   projectName,
@@ -165,6 +207,8 @@ export async function installProject({
   checkDirectory = directoryIsFree,
   ignoreEnv = ensureEnvIsIgnored,
   storeCredential = storeRegistryCredential,
+  environment: inherited = process.env,
+  resolveUserConfig: resolveConfig = resolveUserConfig,
 }) {
   if (!(await checkDirectory(projectPath))) {
     throw new Error(directoryInUse(projectPath));
@@ -175,7 +219,12 @@ export async function installProject({
   const toolDirectory = await makeTempDirectory(join(tmpdir(), 'create-tetra-'));
   const toolConfig = join(toolDirectory, '.npmrc');
   let installed = true;
-  let installFailure = null;
+
+  // Resolved once, up front: it decides both where the credential is written and
+  // which file the project install is pointed at. Those two must be the same
+  // file, or we store a token npm never reads.
+  const userConfig = resolveConfig();
+  if (userConfig.ignored) write(userConfigNotice(userConfig.ignored, userConfig.path));
 
   try {
     await writeSecretFile(
@@ -184,7 +233,7 @@ export async function installProject({
       { write: writeProjectFile, remove: removeFile },
     );
 
-    const environment = { ...process.env, NPM_CONFIG_USERCONFIG: toolConfig };
+    const environment = npmEnvironment(inherited, { NPM_CONFIG_USERCONFIG: toolConfig });
 
     write(`${SCAFFOLDER} ophalen uit jouw registry...\n`);
     await exec(
@@ -216,7 +265,7 @@ export async function installProject({
     });
     await ignoreEnv(projectPath);
 
-    const credentialPath = await storeCredential(files);
+    const credentialPath = await storeCredential(files, { path: userConfig.path });
     write(`Registry-token opgeslagen in ${credentialPath}.\n`);
 
     // Prove the project can install before telling the customer that it can.
@@ -226,7 +275,7 @@ export async function installProject({
     try {
       await exec('npm', ['install'], {
         cwd: projectPath,
-        env: process.env,
+        env: npmEnvironment(inherited, { NPM_CONFIG_USERCONFIG: userConfig.path }),
         maxBuffer: 64 * 1024 * 1024,
         timeout: 15 * 60_000,
       });
@@ -235,11 +284,14 @@ export async function installProject({
       // of no return: the grant is spent and the directory is no longer empty,
       // so re-running create-tetra is not an option. The project itself is fine
       // and one command away, so say that instead of failing opaquely.
-      const reason = error.killed && error.signal === 'SIGTERM'
+      // libuv terminates a timed-out child on Windows without a term signal, so
+      // `killed` alone is the discriminator that holds on both platforms. And
+      // `error.message` is the generic `Command failed: npm install`; the reason
+      // the customer needs — 401, ERESOLVE, ENOTFOUND — is on stderr.
+      const reason = error.killed
         ? 'het duurde langer dan 15 minuten'
-        : (error.message ?? 'onbekende fout').split('\n')[0];
+        : lastLine(error.stderr) ?? (error.message ?? 'onbekende fout').split('\n')[0];
       installed = false;
-      installFailure = reason;
       write([
         '',
         `Het project staat in ${projectPath} en je registry-token is opgeslagen.`,
@@ -254,7 +306,7 @@ export async function installProject({
     await removeDirectory(toolDirectory, { recursive: true, force: true });
   }
 
-  return { projectPath, projectName, installed, installFailure };
+  return { projectPath, projectName, installed };
 }
 
 export function formatNextSteps({ projectPath, projectName, installed = true }, { cwd = process.cwd() } = {}) {

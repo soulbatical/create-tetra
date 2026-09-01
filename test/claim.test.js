@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { renderProjectFiles, validateClaim } from '../src/claim.js';
+import { SCAFFOLDER_SCOPE, renderProjectFiles, validateClaim } from '../src/claim.js';
+import { SCAFFOLDER } from '../src/scaffold.js';
 
 const REGISTRY = 'https://gitlab.com/api/v4/projects/85262758/packages/npm/';
 const AUTH_LINE = '//gitlab.com/api/v4/projects/85262758/packages/npm/:_authToken=${NPM_TOKEN}';
@@ -276,4 +277,32 @@ test('refuses a registry URL with a query string or fragment', () => {
     value.package_registry.npm_registry_url = url;
     assert.throws(() => validateClaim(value), /query or fragment/, `expected ${url} to be refused`);
   }
+});
+
+// The registry mapping we write is scoped, but the package we install is a
+// literal. If those two scopes ever differ, `@soulbatical/create-app` resolves
+// against the public registry instead — dependency confusion, from a claim that
+// otherwise passed every other check.
+test('a claim that maps a scope other than the scaffolder\'s is refused', () => {
+  const other = '@notsoulbatical';
+  assert.throws(
+    () => validateClaim({
+      ...payload(),
+      package_registry: {
+        ...payload().package_registry,
+        scope: other,
+        registry_rule: `${other}:registry=${REGISTRY}`,
+        npmrc_template: [`${other}:registry=${REGISTRY}`, AUTH_LINE, 'always-auth=true'].join('\n'),
+      },
+    }),
+    /scope/i,
+  );
+});
+
+test('the pinned scope and the package we install cannot drift apart', () => {
+  assert.equal(
+    SCAFFOLDER.startsWith(`${SCAFFOLDER_SCOPE}/`),
+    true,
+    `${SCAFFOLDER} does not live in the pinned scope ${SCAFFOLDER_SCOPE}`,
+  );
 });

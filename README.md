@@ -36,15 +36,23 @@ create-tetra volgt die scheiding:
   geen placeholder — dit bestand mag je gewoon committen.
 - Je npm-gebruikersconfiguratie krijgt jouw registry-token, op de plek waar
   `npm login` het ook zet. Daardoor blijft elke volgende `npm install` werken
-  zonder dat je iets exporteert. Welk bestand dat is wordt aan npm gevraagd, niet
-  geraden, dus een eigen `NPM_CONFIG_USERCONFIG` wordt gerespecteerd. Bestaande
-  regels voor andere registries blijven behouden; alleen een eerdere regel voor
-  deze registry wordt vervangen. Het bestand wordt atomair vervangen, dus een
-  mislukte schrijfactie laat je bestaande configuratie ongemoeid, en een symlink
-  naar je dotfiles blijft een symlink — ook als het doel nog niet uitgecheckt is.
-  Omdat er vanaf dat moment een token in staat, krijgt het bestand modus 0600.
-  Welk bestand het is wordt uit je omgeving gelezen en niet uit de map waar je
-  toevallig staat, zodat een gekloonde repo dat niet kan omleiden.
+  zonder dat je iets exporteert. Bestaande regels voor andere registries blijven
+  behouden; alleen een eerdere regel voor deze registry wordt vervangen. Het
+  bestand wordt atomair vervangen, dus een mislukte schrijfactie laat je
+  bestaande configuratie ongemoeid, en een symlink naar je dotfiles blijft een
+  symlink — ook als het doel nog niet uitgecheckt is. Omdat er vanaf dat moment
+  een token in staat, krijgt het bestand modus 0600.
+- Welk bestand dat is, wordt bewust alleen uit `NPM_CONFIG_USERCONFIG` in je
+  omgeving gelezen. Niet via `npm config get` en niet via de `--userconfig`-vlag:
+  npm lost die op tegen de map waar je toevallig staat, en een `.npmrc` in een
+  gekloonde repo kan daarmee bepalen waar jouw persoonlijke token belandt. Een
+  waarde die daardoor onbruikbaar is — relatief, of binnen je huidige map — wordt
+  niet gevolgd, en create-tetra zegt dan welke waarde het overslaat en waar het
+  token in plaats daarvan heen gaat. Heb je een afwijkende npm-setup, dan is dat
+  de knop om aan te draaien.
+- De `npm install` die create-tetra voor je draait wordt op datzelfde bestand
+  gericht, zodat de plek waar het token staat en de plek waar npm kijkt niet uit
+  elkaar kunnen lopen.
 - `<project>/.env` krijgt je licentiesleutel, en `NPM_TOKEN` voor CI-omgevingen
   waar geen gebruikersconfiguratie bestaat. Dit bestand hoort niet in git;
   create-tetra zet het voor je in `.gitignore`.

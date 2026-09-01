@@ -4,7 +4,7 @@ import { lstat, mkdtemp, readFile, rm, stat, symlink, writeFile } from 'node:fs/
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { resolveUserConfigPath, storeRegistryCredential } from '../src/scaffold.js';
+import { resolveUserConfig, resolveUserConfigPath, storeRegistryCredential } from '../src/scaffold.js';
 
 const AUTH_KEY = '//gitlab.example/api/v4/projects/1/packages/npm/';
 const files = { authKey: AUTH_KEY, token: 'new-token' };
@@ -294,4 +294,60 @@ test('a symlink into a directory that does not exist yet still works', async () 
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
+});
+
+// Silently falling back changes which file npm reads for credentials. The
+// customer needs to hear it, or the install fails later with a bare 401 and
+// nothing pointing at the cause.
+test('a userconfig we refuse to follow says so, and says which one', () => {
+  const relative = resolveUserConfig({
+    env: { NPM_CONFIG_USERCONFIG: './collected.npmrc' },
+    fallback: '/home/customer/.npmrc',
+    cwd: '/work',
+  });
+  assert.equal(relative.path, '/home/customer/.npmrc');
+  assert.deepEqual(relative.ignored, { value: './collected.npmrc', reason: 'relative' });
+
+  const inside = resolveUserConfig({
+    env: { NPM_CONFIG_USERCONFIG: '/work/repo/collected.npmrc' },
+    fallback: '/home/customer/.npmrc',
+    cwd: '/work',
+  });
+  assert.equal(inside.path, '/home/customer/.npmrc');
+  assert.deepEqual(inside.ignored, { value: '/work/repo/collected.npmrc', reason: 'in-cwd' });
+
+  assert.equal(
+    resolveUserConfig({
+      env: { NPM_CONFIG_USERCONFIG: '/home/customer/mine.npmrc' },
+      fallback: '/home/customer/.npmrc',
+      cwd: '/work',
+    }).ignored,
+    null,
+    'a usable setting is not a complaint',
+  );
+});
+
+// npm's own parseField expands `~\\` on win32; only handling `~/` leaves a
+// Windows customer's setting silently dropped.
+test('a home-relative userconfig is expanded the way npm expands it', () => {
+  assert.equal(
+    resolveUserConfigPath({
+      env: { NPM_CONFIG_USERCONFIG: '~/mine.npmrc' },
+      home: '/home/customer',
+      cwd: '/work',
+      platform: 'linux',
+    }),
+    '/home/customer/mine.npmrc',
+  );
+
+  assert.equal(
+    resolveUserConfigPath({
+      env: { NPM_CONFIG_USERCONFIG: '~\\sub\\mine.npmrc' },
+      home: '/home/customer',
+      cwd: '/work',
+      platform: 'win32',
+    }),
+    join('/home/customer', 'sub\\mine.npmrc'),
+    'a backslash form is home-relative on Windows',
+  );
 });

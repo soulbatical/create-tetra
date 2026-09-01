@@ -38,7 +38,10 @@ function harness({ scaffolderWrites = null, directoryFree = true } = {}) {
       removeFile: async () => {},
       removeDirectory: async (path) => { removedDirectories.push(path); },
       ignoreEnv: async () => {},
-      storeCredential: async (given) => { stored.push(given); return '/home/customer/.npmrc'; },
+      storeCredential: async (given, options = {}) => {
+        stored.push({ files: given, path: options.path });
+        return options.path ?? '/home/customer/.npmrc';
+      },
       // The real scaffolder writes its own maintainer-facing .npmrc while it
       // generates, so reproduce that here: it is exactly the write our own has
       // to land after.
@@ -78,7 +81,7 @@ test('the credential is stored where npm looks for it, not only in .env', async 
   const h = harness();
   await installProject(h.options);
 
-  assert.deepEqual(h.stored, [files]);
+  assert.deepEqual(h.stored.map(({ files: given }) => given), [files]);
   const npmrc = projectWrites(h, '.npmrc').at(-1);
   assert.equal(npmrc.content.includes('_authToken'), false);
   assert.equal(npmrc.content.includes('deploy-token-value'), false);
@@ -158,14 +161,14 @@ test('the helper directory is cleaned up even when the scaffolder fails', async 
 // the file we just wrote.
 test('the project install uses the real user config, not the tool config', async () => {
   const h = harness();
-  await installProject(h.options);
+  await installProject({ ...h.options, resolveUserConfig: () => ({ path: '/home/customer/.npmrc', ignored: null }) });
 
   const projectInstall = h.execs.find(
     ({ command, args, options }) => command === 'npm' && args[0] === 'install' && options.cwd === '/projects/my-app',
   );
   assert.equal(
     projectInstall.options.env.NPM_CONFIG_USERCONFIG,
-    process.env.NPM_CONFIG_USERCONFIG,
+    '/home/customer/.npmrc',
     'the project install must not be pointed at the throwaway tool config',
   );
 
@@ -233,4 +236,126 @@ test('the closing message does not contradict the recovery instructions', async 
     formatNextSteps({ projectPath: '/p/app', projectName: 'app', installed: true }, { cwd: '/p' }),
     /npm run dev/,
   );
+});
+
+// npx resolves npm's own config for the directory the customer happened to be
+// standing in — a project .npmrc there can set `userconfig=` — and hands the
+// result to us as npm_config_* variables. Passing those straight through means
+// npm reads a file chosen by that directory instead of the one we just stored
+// the credential in. Measured against a local registry: the install goes out
+// with no Authorization header at all.
+test('the project install reads the npmrc the token was actually stored in', async () => {
+  const h = harness();
+  await installProject({
+    ...h.options,
+    environment: {
+      PATH: '/usr/bin',
+      npm_config_userconfig: '/hostile/repo/collected.npmrc',
+      npm_config_registry: 'http://evil.example/npm/',
+    },
+    resolveUserConfig: () => ({ path: '/home/customer/.npmrc', ignored: null }),
+  });
+
+  const projectInstall = h.execs.find(
+    ({ command, args, options }) => command === 'npm' && args[0] === 'install' && options.cwd === '/projects/my-app',
+  );
+  assert.equal(
+    projectInstall.options.env.NPM_CONFIG_USERCONFIG,
+    '/home/customer/.npmrc',
+    'the install must be pointed at the file the credential was written to',
+  );
+  assert.deepEqual(
+    h.stored.map(({ path }) => path),
+    ['/home/customer/.npmrc'],
+    'and the credential must go to that same resolved path',
+  );
+});
+
+test('npm config inherited from npx cannot steer either install', async () => {
+  const h = harness();
+  await installProject({
+    ...h.options,
+    environment: {
+      PATH: '/usr/bin',
+      npm_config_userconfig: '/hostile/repo/collected.npmrc',
+      npm_config_registry: 'http://evil.example/npm/',
+      NPM_CONFIG_REGISTRY: 'http://evil.example/npm/',
+    },
+    resolveUserConfig: () => ({ path: '/home/customer/.npmrc', ignored: null }),
+  });
+
+  for (const { command, args, options } of h.execs) {
+    const inherited = Object.keys(options.env).filter(
+      (key) => /^npm_config_/i.test(key) && key !== 'NPM_CONFIG_USERCONFIG',
+    );
+    assert.deepEqual(inherited, [], `${command} ${args[0]} inherited npm config: ${inherited.join(', ')}`);
+    assert.equal(options.env.PATH, '/usr/bin', 'the rest of the environment must survive');
+  }
+
+  const helper = h.execs.find(({ args }) => args.includes('@soulbatical/create-app'));
+  assert.equal(helper.options.env.NPM_CONFIG_USERCONFIG, '/tmp/tool/.npmrc');
+});
+
+// A userconfig we refuse to use changes where npm looks for the token, so the
+// customer has to be told; otherwise the install fails with a bare 401 later.
+test('a userconfig we will not follow is reported instead of silently dropped', async () => {
+  const h = harness();
+  const said = [];
+  await installProject({
+    ...h.options,
+    write: (text) => said.push(text),
+    resolveUserConfig: () => ({
+      path: '/home/customer/.npmrc',
+      ignored: { value: './collected.npmrc', reason: 'relative' },
+    }),
+  });
+
+  const notice = said.join('');
+  assert.match(notice, /NPM_CONFIG_USERCONFIG/, 'name the setting being ignored');
+  assert.match(notice, /\.\/collected\.npmrc/, 'and the value, so it can be found');
+});
+
+// libuv terminates a timed-out process on Windows without a term signal, so
+// requiring SIGTERM reports a timeout as an ordinary failure there.
+test('a timeout is reported as a timeout regardless of platform', async () => {
+  const h = harness();
+  const said = [];
+  const timedOut = Object.assign(new Error('Command failed: npm install'), { killed: true, signal: null });
+  const result = await installProject({
+    ...h.options,
+    write: (text) => said.push(text),
+    exec: async (command, args, options) => {
+      h.execs.push({ command, args, options });
+      if (command === 'npm' && args[0] === 'install' && options.cwd === '/projects/my-app') throw timedOut;
+      return { stdout: '', stderr: '' };
+    },
+  });
+
+  assert.equal(result.installed, false);
+  assert.match(said.join(''), /15 minuten/);
+});
+
+// `Command failed: npm install` tells the customer nothing. npm puts the real
+// reason — 401, ERESOLVE, ENOTFOUND — on stderr.
+test('the reason npm gave is passed on, not the generic wrapper', async () => {
+  const h = harness();
+  const said = [];
+  const failed = Object.assign(new Error('Command failed: npm install'), {
+    killed: false,
+    signal: null,
+    stderr: 'npm error code E401\nnpm error Unable to authenticate, need: Bearer\n\n',
+  });
+  await installProject({
+    ...h.options,
+    write: (text) => said.push(text),
+    exec: async (command, args, options) => {
+      h.execs.push({ command, args, options });
+      if (command === 'npm' && args[0] === 'install' && options.cwd === '/projects/my-app') throw failed;
+      return { stdout: '', stderr: '' };
+    },
+  });
+
+  const notice = said.join('');
+  assert.match(notice, /Unable to authenticate/);
+  assert.doesNotMatch(notice, /\(Command failed: npm install\)/);
 });

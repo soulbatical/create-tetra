@@ -21,6 +21,12 @@ const REGISTRY_KEYS = [
   'npmrc_template',
 ];
 
+// The package we install is a literal, but the registry mapping we write is
+// scoped. A claim that maps a different scope leaves `@soulbatical/create-app`
+// resolving against the public registry instead of the customer's — dependency
+// confusion reached through a claim that passed every other check. Pin it.
+export const SCAFFOLDER_SCOPE = '@soulbatical';
+
 // The scaffolder is Soulbatical infrastructure, not customer-supplied, so the
 // set of hosts it can ever live on is short and known. Anything else is either a
 // mistake or an attack, and both should stop here.
@@ -163,7 +169,7 @@ function validateNpmrcTemplate(template, { scope, registryUrl }) {
   return template;
 }
 
-export function validateClaim(value, { allowedHosts, allowInsecure } = {}) {
+export function validateClaim(value, { allowedHosts, allowInsecure, requiredScope = SCAFFOLDER_SCOPE } = {}) {
   if (!isRecord(value) || !isRecord(value.package_registry)) {
     throw new Error('Control plane returned an invalid onboarding claim.');
   }
@@ -178,6 +184,9 @@ export function validateClaim(value, { allowedHosts, allowInsecure } = {}) {
   const scope = requireLine(registry.scope, 'package scope', { maxLength: 128 });
   if (!/^@[a-z0-9][a-z0-9._-]*$/.test(scope)) {
     throw new Error('Control plane returned an invalid package scope.');
+  }
+  if (scope !== requiredScope) {
+    throw new Error(`Control plane returned package scope ${scope} instead of ${requiredScope}.`);
   }
 
   const registryUrl = requireRegistryUrl(registry.npm_registry_url, 'registry URL', { allowedHosts, allowInsecure });
