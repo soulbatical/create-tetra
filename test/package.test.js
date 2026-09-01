@@ -40,7 +40,7 @@ test('packed tarball starts in a clean shell without private registry config', (
       encoding: 'utf8',
       env: { PATH: process.env.PATH },
     });
-    assert.match(help, /npx create-tetra@latest/);
+    assert.match(help, /npx create-tetra/);
     assert.doesNotMatch(help, /--yes/);
 
     const bin = join(target, 'node_modules', '.bin', 'create-tetra');

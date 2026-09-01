@@ -1,0 +1,155 @@
+import assert from 'node:assert/strict';
+import test from 'node:test';
+
+import { runCreateTetra } from '../src/cli.js';
+
+const SECRETS = ['device-secret', 'grant-secret', 'deploy-token-value'];
+
+const claim = {
+  licenseKey: 'licence-secret',
+  registry: {
+    provider: 'gitlab',
+    scope: '@soulbatical',
+    url: 'https://gitlab.com/api/v4/projects/85262758/packages/npm/',
+    token: 'deploy-token-value',
+    npmrcTemplate: [
+      '@soulbatical:registry=https://gitlab.com/api/v4/projects/85262758/packages/npm/',
+      '//gitlab.com/api/v4/projects/85262758/packages/npm/:_authToken=${NPM_TOKEN}',
+      'always-auth=true',
+    ].join('\n'),
+  },
+  licenseVerification: { publicKeysJson: '{"keys":[]}' },
+};
+
+function stubClient({ pollStatuses = [{ status: 'approved', installGrant: 'grant-secret' }] } = {}) {
+  const calls = [];
+  const queue = [...pollStatuses];
+  return {
+    calls,
+    async requestAuthorization(input) {
+      calls.push(['authorize', input]);
+      return {
+        authorizationId: 'auth-id',
+        deviceCode: SECRETS[0],
+        userCode: 'ABCD-EFGH',
+        verificationUri: 'https://www.tetrasaas.com/install/approve?request=public-id',
+        intervalSeconds: 1,
+        expiresAt: Date.now() + 60_000,
+      };
+    },
+    async pollAuthorization(deviceCode) {
+      calls.push(['poll', deviceCode]);
+      return queue.shift() ?? { status: 'pending' };
+    },
+    async claim(grant) {
+      calls.push(['claim', grant]);
+      return claim;
+    },
+  };
+}
+
+test('approval leads to a real project, and no secret is ever printed', async () => {
+  let output = '';
+  const installs = [];
+  const client = stubClient();
+
+  const result = await runCreateTetra({
+    argv: ['horeca-crm'],
+    cwd: '/tmp',
+    version: '1.0.0',
+    client,
+    browser: () => {},
+    write: (text) => { output += text; },
+    sleep: async () => {},
+    install: async (options) => {
+      installs.push(options);
+      return { projectPath: options.projectPath, projectName: options.projectName };
+    },
+  });
+
+  assert.equal(result.kind, 'installed');
+  assert.equal(installs.length, 1);
+  assert.equal(installs[0].projectName, 'horeca-crm');
+  assert.equal(installs[0].projectPath, '/tmp/horeca-crm');
+  assert.match(installs[0].files.npmrc, /@soulbatical:registry=/);
+  assert.match(installs[0].files.env, /NPM_TOKEN=deploy-token-value/);
+
+  assert.equal(client.calls[2][0], 'claim');
+  assert.equal(client.calls[2][1], 'grant-secret');
+
+  for (const secret of [...SECRETS, 'licence-secret']) {
+    assert.equal(output.includes(secret), false, `${secret} leaked to the terminal`);
+  }
+  assert.match(output, /Bevestigingscode: ABCD-EFGH/);
+});
+
+test('a denied approval claims nothing and installs nothing', async () => {
+  const client = stubClient({ pollStatuses: [{ status: 'denied' }] });
+  let installed = false;
+
+  await assert.rejects(
+    runCreateTetra({
+      version: '1.0.0',
+      client,
+      browser: () => {},
+      write: () => {},
+      sleep: async () => {},
+      install: async () => { installed = true; },
+    }),
+    /geweigerd/,
+  );
+
+  assert.equal(installed, false);
+  assert.equal(client.calls.some(([kind]) => kind === 'claim'), false);
+});
+
+test('an expired approval never reaches the claim', async () => {
+  const client = stubClient({ pollStatuses: [{ status: 'expired' }] });
+
+  await assert.rejects(
+    runCreateTetra({
+      version: '1.0.0',
+      client,
+      browser: () => {},
+      write: () => {},
+      sleep: async () => {},
+      install: async () => {},
+    }),
+    /verlopen/,
+  );
+
+  assert.equal(client.calls.some(([kind]) => kind === 'claim'), false);
+});
+
+test('the browser is only opened for the approval URL the control plane gave', async () => {
+  const opened = [];
+  await runCreateTetra({
+    argv: ['app'],
+    cwd: '/tmp',
+    version: '1.0.0',
+    client: stubClient(),
+    browser: (url) => opened.push(url),
+    write: () => {},
+    sleep: async () => {},
+    install: async (o) => ({ projectPath: o.projectPath, projectName: o.projectName }),
+  });
+
+  assert.deepEqual(opened, ['https://www.tetrasaas.com/install/approve?request=public-id']);
+});
+
+test('a reserved prerelease still refuses before touching anything', async () => {
+  let output = '';
+  const client = stubClient();
+  const run = await runCreateTetra({
+    argv: [],
+    version: '0.0.1-reserved.1',
+    client,
+    browser: () => { throw new Error('must not open a browser'); },
+    write: (text) => { output += text; },
+    install: async () => { throw new Error('must not install'); },
+  });
+
+  assert.equal(run.kind, 'unavailable');
+  assert.equal(client.calls.length, 0);
+  assert.match(output, /nog niet beschikbaar/);
+});

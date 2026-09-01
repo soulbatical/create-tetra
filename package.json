@@ -20,7 +20,6 @@
     "node": ">=24"
   },
   "scripts": {
-    "preview": "node ./dev/run-preview.js",
     "test": "node --test 'test/*.test.js'",
     "pack:check": "npm pack --dry-run --json"
   },

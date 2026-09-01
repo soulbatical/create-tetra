@@ -1,20 +1,11 @@
 import { readFileSync } from 'node:fs';
 import { basename, resolve } from 'node:path';
+import { renderProjectFiles } from './claim.js';
 import { createControlPlaneClient } from './control-plane-client.js';
-import { formatInstallResult, summarizeInstallResult } from './contracts.js';
 import { openBrowser } from './open-browser.js';
+import { formatNextSteps, installProject } from './scaffold.js';
 
 export const VERSION = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version;
-const HELP = `create-tetra ${VERSION}
-
-Publieke, interactieve bootstrap voor een Tetra-app.
-
-Gebruik:
-  npx create-tetra@latest [project-map]
-
-De CLI opent een beveiligde browsergoedkeuring. Daar ziet en bevestigt de
-gebruiker organisatie, licentie en installatieactie voordat Tetra iets wijzigt.
-`;
 
 // A prerelease version is a reserved name claim, not a usable bootstrap. npm can
 // attach `latest` to the first version of a brand-new package regardless of the
@@ -30,13 +21,25 @@ Deze versie is een gereserveerde naamclaim en installeert bewust niets.
 Volg https://github.com/soulbatical/create-tetra voor de eerste echte release.
 `;
 
+const HELP = `create-tetra ${VERSION}
+
+Zet een nieuw Tetra-project op.
+
+Gebruik:
+  npx create-tetra [project-map]
+
+De CLI opent een beveiligde goedkeuring in je browser. Daar zie en bevestig je
+organisatie, licentie en project. Daarna richt create-tetra je project in met je
+eigen registry-toegang en licentie; je hoeft zelf geen token te regelen.
+`;
+
 function parseArgs(argv, cwd) {
   if (argv.includes('--help') || argv.includes('-h')) return { help: true };
   if (argv.includes('--version') || argv.includes('-v')) return { version: true };
   const options = argv.filter((arg) => arg.startsWith('-'));
   if (options.length > 0) throw new Error(`Onbekende optie: ${options[0]}`);
   if (argv.length > 1) throw new Error('Geef maximaal één project-map op.');
-  return { projectPath: resolve(cwd, argv[0] ?? '.'), targets: ['local'], verifyCleanCache: true };
+  return { projectPath: resolve(cwd, argv[0] ?? '.'), targets: ['local'] };
 }
 
 export async function runCreateTetra({
@@ -48,6 +51,7 @@ export async function runCreateTetra({
   sleep = (milliseconds) => new Promise((resolveSleep) => setTimeout(resolveSleep, milliseconds)),
   now = () => Date.now(),
   version = VERSION,
+  install = installProject,
 } = {}) {
   const parsed = parseArgs(argv, cwd);
   if (parsed.help) { write(HELP); return { kind: 'help' }; }
@@ -55,8 +59,9 @@ export async function runCreateTetra({
   if (isReservedRelease(version)) { write(RESERVED_NOTICE); return { kind: 'unavailable' }; }
 
   const projectName = basename(parsed.projectPath) || 'tetra-app';
-  write(`Tetra bootstrap\nProject: ${projectName}\nActie: installeren\n\n`);
-  write('Beveiligde browsergoedkeuring aanvragen...\n');
+  write(`Tetra\nProject: ${projectName}\n\n`);
+
+  write('Goedkeuring aanvragen...\n');
   const authorization = await client.requestAuthorization({
     action: 'install',
     project: { name: projectName },
@@ -73,25 +78,27 @@ export async function runCreateTetra({
     status = await client.pollAuthorization(authorization.deviceCode);
     if (status.status === 'pending') continue;
     if (status.status === 'denied') throw new Error('De installatie is in de browser geweigerd.');
-    if (status.status === 'expired') throw new Error('De browsergoedkeuring is verlopen.');
+    if (status.status === 'expired') throw new Error('De goedkeuring is verlopen.');
     break;
   }
-  if (!status || status.status !== 'approved') throw new Error('De browsergoedkeuring is verlopen.');
+  if (!status || status.status !== 'approved') throw new Error('De goedkeuring is verlopen.');
 
-  write('Goedgekeurd. Tetra configureert de installatie...\n');
-  const result = await client.install({
-    installGrant: status.installGrant,
+  write('Goedgekeurd.\n');
+  const claim = await client.claim(status.installGrant);
+  const files = renderProjectFiles(claim);
+
+  const result = await install({
+    projectPath: parsed.projectPath,
     projectName,
-    targets: parsed.targets,
-    verifyCleanCache: parsed.verifyCleanCache,
+    files: { ...files, token: claim.registry.token },
+    write,
   });
-  const outcome = summarizeInstallResult(result);
-  write(formatInstallResult(result, outcome));
-  return { kind: 'installed', outcome, result };
+
+  write(formatNextSteps(result));
+  return { kind: 'installed', project: result };
 }
 
 export async function main() {
   const run = await runCreateTetra();
   if (run.kind === 'unavailable') process.exitCode = 1;
-  if (run.kind === 'installed' && run.outcome === 'failed') process.exitCode = 1;
 }

@@ -1,8 +1,10 @@
 import { spawn } from 'node:child_process';
 
-export function openBrowser(url, { platform = process.platform, spawnImpl = spawn } = {}) {
+const APPROVAL_ORIGIN = 'https://www.tetrasaas.com';
+
+export function openBrowser(url, { platform = process.platform, spawnImpl = spawn, origin = APPROVAL_ORIGIN } = {}) {
   const parsed = new URL(url);
-  if (parsed.protocol !== 'https:' || parsed.origin !== 'https://app.tetrasaas.com') {
+  if (parsed.protocol !== 'https:' || parsed.origin !== origin) {
     throw new Error('Refusing to open an untrusted browser URL.');
   }
   const command = platform === 'darwin' ? 'open' : platform === 'win32' ? 'cmd' : 'xdg-open';
