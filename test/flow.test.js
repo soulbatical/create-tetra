@@ -58,6 +58,7 @@ test('approval leads to a real project, and no secret is ever printed', async ()
     cwd: '/tmp',
     version: '1.0.0',
     client,
+    checkDirectory: async () => true,
     browser: () => {},
     write: (text) => { output += text; },
     sleep: async () => {},
@@ -91,6 +92,7 @@ test('a denied approval claims nothing and installs nothing', async () => {
     runCreateTetra({
       version: '1.0.0',
       client,
+      checkDirectory: async () => true,
       browser: () => {},
       write: () => {},
       sleep: async () => {},
@@ -110,6 +112,7 @@ test('an expired approval never reaches the claim', async () => {
     runCreateTetra({
       version: '1.0.0',
       client,
+      checkDirectory: async () => true,
       browser: () => {},
       write: () => {},
       sleep: async () => {},
@@ -128,6 +131,7 @@ test('the browser is only opened for the approval URL the control plane gave', a
     cwd: '/tmp',
     version: '1.0.0',
     client: stubClient(),
+    checkDirectory: async () => true,
     browser: (url) => opened.push(url),
     write: () => {},
     sleep: async () => {},
@@ -152,4 +156,25 @@ test('a reserved prerelease still refuses before touching anything', async () =>
   assert.equal(run.kind, 'unavailable');
   assert.equal(client.calls.length, 0);
   assert.match(output, /nog niet beschikbaar/);
+});
+
+test('an unusable target directory costs no approval and spends no grant', async () => {
+  const client = stubClient();
+
+  await assert.rejects(
+    runCreateTetra({
+      argv: ['taken'],
+      cwd: '/tmp',
+      version: '1.0.0',
+      client,
+      checkDirectory: async () => false,
+      browser: () => { throw new Error('must not open a browser'); },
+      write: () => {},
+      sleep: async () => {},
+      install: async () => { throw new Error('must not install'); },
+    }),
+    /bestaat al en is niet leeg/,
+  );
+
+  assert.deepEqual(client.calls, [], 'the control plane must not be contacted at all');
 });

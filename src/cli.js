@@ -3,7 +3,7 @@ import { basename, resolve } from 'node:path';
 import { renderProjectFiles } from './claim.js';
 import { createControlPlaneClient } from './control-plane-client.js';
 import { openBrowser } from './open-browser.js';
-import { formatNextSteps, installProject } from './scaffold.js';
+import { directoryIsFree, formatNextSteps, installProject } from './scaffold.js';
 
 export const VERSION = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version;
 
@@ -52,6 +52,7 @@ export async function runCreateTetra({
   now = () => Date.now(),
   version = VERSION,
   install = installProject,
+  checkDirectory = directoryIsFree,
 } = {}) {
   const parsed = parseArgs(argv, cwd);
   if (parsed.help) { write(HELP); return { kind: 'help' }; }
@@ -60,6 +61,13 @@ export async function runCreateTetra({
 
   const projectName = basename(parsed.projectPath) || 'tetra-app';
   write(`Tetra\nProject: ${projectName}\n\n`);
+
+  // Before anything else: a target we cannot use must not cost the customer an
+  // approval. A grant is single-use, so failing after it is spent means they
+  // have to start over for a mistake we could see up front.
+  if (!(await checkDirectory(parsed.projectPath))) {
+    throw new Error(`De map ${parsed.projectPath} bestaat al en is niet leeg.`);
+  }
 
   write('Goedkeuring aanvragen...\n');
   const authorization = await client.requestAuthorization({
@@ -92,6 +100,7 @@ export async function runCreateTetra({
     projectName,
     files: { ...files, token: claim.registry.token },
     write,
+    checkDirectory,
   });
 
   write(formatNextSteps(result));
