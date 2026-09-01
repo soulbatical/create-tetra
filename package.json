@@ -4,7 +4,7 @@
   "description": "Public, interactive bootstrap for Tetra applications.",
   "type": "module",
   "bin": {
-    "create-tetra": "./bin/create-tetra.js"
+    "create-tetra": "bin/create-tetra.js"
   },
   "exports": {
     ".": "./src/index.js",
