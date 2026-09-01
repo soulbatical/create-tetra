@@ -3,7 +3,7 @@ import { basename, resolve } from 'node:path';
 import { renderProjectFiles } from './claim.js';
 import { createControlPlaneClient } from './control-plane-client.js';
 import { openBrowser } from './open-browser.js';
-import { directoryIsFree, formatNextSteps, installProject } from './scaffold.js';
+import { directoryInUse, directoryIsFree, formatNextSteps, installProject } from './scaffold.js';
 
 export const VERSION = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version;
 
@@ -66,7 +66,7 @@ export async function runCreateTetra({
   // approval. A grant is single-use, so failing after it is spent means they
   // have to start over for a mistake we could see up front.
   if (!(await checkDirectory(parsed.projectPath))) {
-    throw new Error(`De map ${parsed.projectPath} bestaat al en is niet leeg.`);
+    throw new Error(directoryInUse(parsed.projectPath));
   }
 
   write('Goedkeuring aanvragen...\n');
@@ -98,7 +98,7 @@ export async function runCreateTetra({
   const result = await install({
     projectPath: parsed.projectPath,
     projectName,
-    files: { ...files, token: claim.registry.token },
+    files,
     write,
     checkDirectory,
   });

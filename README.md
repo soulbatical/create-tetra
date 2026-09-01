@@ -26,12 +26,23 @@ Doppler.
 De organisatiebrede tokens van Soulbatical komen hier nooit aan te pas. Je krijgt
 je eigen, intrekbare toegang.
 
-## Wat er in je project belandt
+## Wat er waar terechtkomt
 
-`.npmrc` wijst de `@soulbatical`-scope naar jouw registry en verwijst voor het
-token naar `${NPM_TOKEN}`. Het token zelf staat in `.env`, samen met je
-licentiesleutel — dus het bestand dat meestal wél in git belandt bevat geen
-geheim. Zet `.env` in je `.gitignore` en houd het daar.
+npm leest configuratie uit je project en credentials uit je gebruikersaccount, en
+create-tetra volgt die scheiding:
+
+- `<project>/.npmrc` wijst de `@soulbatical`-scope naar jouw registry. Geen token,
+  geen placeholder — dit bestand mag je gewoon committen.
+- `~/.npmrc` krijgt jouw registry-token, op de plek waar `npm login` het ook zet.
+  Daardoor blijft elke volgende `npm install` werken zonder dat je iets exporteert.
+  Alleen de regel voor deze registry wordt aangeraakt; de rest van je bestand
+  blijft ongemoeid.
+- `<project>/.env` krijgt je licentiesleutel, en `NPM_TOKEN` voor CI-omgevingen
+  waar geen gebruikersconfiguratie bestaat. Dit bestand hoort niet in git;
+  create-tetra zet het voor je in `.gitignore`.
+
+create-tetra draait de eerste `npm install` zelf, zodat je project bewezen
+installeerbaar is voordat je iets te horen krijgt.
 
 ## Veiligheidsgrenzen
 
@@ -39,9 +50,14 @@ geheim. Zet `.env` in je `.gitignore` en houd het daar.
   registryconfiguratie. Hij heeft geen dependencies.
 - De browser wordt alleen geopend voor `https://www.tetrasaas.com`; een andere
   origin wordt geweigerd.
-- Antwoorden van de control plane worden strikt gevalideerd. Een `.npmrc`-sjabloon
-  dat een andere registry of een extra npm-directive probeert mee te smokkelen
-  wordt geweigerd, net als onzichtbare stuur- en bidi-tekens.
+- De registry moet HTTPS zijn, mag geen inloggegevens in de URL dragen, en moet
+  op een van de hosts staan waar Tetra daadwerkelijk vandaan gepubliceerd wordt.
+  Een control plane kan je installatie dus niet naar een derde partij sturen.
+- Elke regel die in npm-configuratie belandt wordt geparsed en vergeleken met die
+  registry: precies één registry-regel, precies één tokenregel voor precies die
+  host, verder niets. Onzichtbare stuur- en bidi-tekens worden geweigerd, en
+  alles wat een `.env`-regel wordt mag geen nieuwe regel bevatten.
+- De helper-installatie draait met `--ignore-scripts`.
 - Token, licentiesleutel en goedkeuringsbewijs verschijnen nooit in de output.
 
 ## Verificatie vóór uitvoeren

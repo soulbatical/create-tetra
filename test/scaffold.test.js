@@ -1,64 +1,69 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { join } from 'node:path';
 
-import { ensureEnvIsIgnored, installProject } from '../src/scaffold.js';
+import { ensureEnvIsIgnored, installProject, storeRegistryCredential } from '../src/scaffold.js';
+
+const AUTH_KEY = '//gitlab.example/npm/';
 
 const files = {
-  npmrc: '@soulbatical:registry=https://gitlab.example/npm/\n//gitlab.example/npm/:_authToken=${NPM_TOKEN}\n',
-  env: 'NPM_TOKEN=deploy-token-value\nTETRA_LICENSE_KEY=licence\n',
+  projectNpmrc: '@soulbatical:registry=https://gitlab.example/npm/\nengine-strict=true\n',
+  userNpmrcEntry: `${AUTH_KEY}:_authToken=deploy-token-value`,
+  env: 'TETRA_LICENSE_KEY=licence\nNPM_TOKEN=deploy-token-value\n',
   token: 'deploy-token-value',
+  authKey: AUTH_KEY,
 };
 
-function harness({ scaffolderWrites = null, existing = true } = {}) {
+function harness({ scaffolderWrites = null, directoryFree = true } = {}) {
   const writes = [];
   const execs = [];
-  const removed = [];
+  const removedDirectories = [];
+  const modes = [];
+  const stored = [];
   return {
     writes,
     execs,
-    removed,
+    removedDirectories,
+    modes,
+    stored,
     options: {
       projectPath: '/projects/my-app',
       projectName: 'my-app',
       files,
       write: () => {},
-      checkDirectory: async () => existing,
+      checkDirectory: async () => directoryFree,
       makeTempDirectory: async () => '/tmp/tool',
-      makeDirectory: async () => {},
-      writeProjectFile: async (path, content) => {
-        writes.push({ path, content });
-      },
-      removeDirectory: async (path) => { removed.push(path); },
+      makeDirectory: async (path, options) => { modes.push({ call: 'mkdir', path, options }); },
+      setMode: async (path, mode) => { modes.push({ call: 'chmod', path, mode }); },
+      writeProjectFile: async (path, content, options) => { writes.push({ path, content, options }); },
       removeFile: async () => {},
+      removeDirectory: async (path) => { removedDirectories.push(path); },
       ignoreEnv: async () => {},
+      storeCredential: async (given) => { stored.push(given); return '/home/customer/.npmrc'; },
       // The real scaffolder writes its own maintainer-facing .npmrc while it
-      // generates, so reproduce that here: it is exactly the write our own
-      // write has to land after.
-      exec: async (command, args) => {
-        execs.push({ command, args });
-        if (command.includes('create-soulbatical-app') && scaffolderWrites) {
-          writes.push(scaffolderWrites);
-        }
+      // generates, so reproduce that here: it is exactly the write our own has
+      // to land after.
+      exec: async (command, args, options) => {
+        execs.push({ command, args, options });
+        if (command.includes('create-soulbatical-app') && scaffolderWrites) writes.push(scaffolderWrites);
         return { stdout: '', stderr: '' };
       },
     },
   };
 }
 
+const projectWrites = (h, name) => h.writes.filter(({ path }) => path === `/projects/my-app/${name}`);
+
 test("the customer's registry is written after the scaffolder, not before", async () => {
-  const maintainerNpmrc = {
-    path: '/projects/my-app/.npmrc',
-    content: '@soulbatical:registry=https://npm.pkg.github.com\n',
-  };
-  const h = harness({ scaffolderWrites: maintainerNpmrc });
+  const h = harness({
+    scaffolderWrites: {
+      path: '/projects/my-app/.npmrc',
+      content: '@soulbatical:registry=https://npm.pkg.github.com\n',
+    },
+  });
 
   await installProject(h.options);
 
-  const projectNpmrcWrites = h.writes.filter(({ path }) => path === '/projects/my-app/.npmrc');
-  assert.ok(projectNpmrcWrites.length >= 1, 'the project .npmrc must be written');
-
-  const last = projectNpmrcWrites.at(-1);
+  const last = projectWrites(h, '.npmrc').at(-1);
   assert.match(last.content, /gitlab\.example/);
   assert.equal(
     last.content.includes('npm.pkg.github.com'),
@@ -67,35 +72,71 @@ test("the customer's registry is written after the scaffolder, not before", asyn
   );
 });
 
-test('the token never lands in the project .npmrc, only in .env', async () => {
+// npm does not read .env, so a project .npmrc that only names ${NPM_TOKEN} makes
+// every later `npm install` fail with a bare 401.
+test('the credential is stored where npm looks for it, not only in .env', async () => {
   const h = harness();
   await installProject(h.options);
 
-  for (const { path, content } of h.writes) {
-    if (path.endsWith('.npmrc')) {
-      assert.equal(content.includes('deploy-token-value'), false, `${path} contains the raw token`);
-    }
-  }
-  const env = h.writes.find(({ path }) => path === '/projects/my-app/.env');
-  assert.match(env.content, /deploy-token-value/);
+  assert.deepEqual(h.stored, [files]);
+  const npmrc = projectWrites(h, '.npmrc').at(-1);
+  assert.equal(npmrc.content.includes('_authToken'), false);
+  assert.equal(npmrc.content.includes('deploy-token-value'), false);
 });
 
-test('the helper install lives outside the project and is cleaned up', async () => {
+test('the project install runs before we claim the project is ready', async () => {
   const h = harness();
   await installProject(h.options);
 
-  assert.deepEqual(h.removed, ['/tmp/tool']);
-  const installStep = h.execs.find(({ command }) => command === 'npm');
-  assert.ok(installStep.args.includes('--prefix'));
-  assert.equal(installStep.args[installStep.args.indexOf('--prefix') + 1], '/tmp/tool');
-  assert.equal(
-    h.writes.some(({ path }) => path.startsWith('/projects/my-app/node_modules')),
-    false,
+  const scaffoldIndex = h.execs.findIndex(({ command }) => command.includes('create-soulbatical-app'));
+  const installIndex = h.execs.findIndex(
+    ({ command, args, options }) => command === 'npm' && args[0] === 'install' && options.cwd === '/projects/my-app',
+  );
+
+  assert.ok(installIndex >= 0, 'a project-level npm install must have run');
+  assert.ok(installIndex > scaffoldIndex, 'the install must come after the scaffold');
+});
+
+// Removed and recreated exclusively: writeFile leaves the mode of an existing
+// file alone, and 'wx' fails on a planted symlink instead of writing through it.
+test('every file carrying a credential is created exclusively with a private mode', async () => {
+  const h = harness();
+  await installProject(h.options);
+
+  const secretFiles = h.writes.filter(({ path }) => path.endsWith('.npmrc') || path.endsWith('.env'));
+  assert.ok(secretFiles.length >= 3);
+  for (const { path, options } of secretFiles) {
+    assert.equal(options?.mode, 0o600, `${path} must be 0600`);
+    assert.equal(options?.flag, 'wx', `${path} must be created exclusively`);
+  }
+});
+
+// mkdir leaves the mode of an existing directory alone, and an existing empty
+// directory is a valid target.
+test('the project directory is locked down even when it already existed', async () => {
+  const h = harness();
+  await installProject(h.options);
+
+  assert.equal(h.modes.find(({ call }) => call === 'mkdir').options.mode, 0o700);
+  assert.deepEqual(
+    h.modes.find(({ call }) => call === 'chmod'),
+    { call: 'chmod', path: '/projects/my-app', mode: 0o700 },
   );
 });
 
+test('the helper install lives outside the project, ignores scripts and is cleaned up', async () => {
+  const h = harness();
+  await installProject(h.options);
+
+  assert.deepEqual(h.removedDirectories, ['/tmp/tool']);
+  const helper = h.execs.find(({ args }) => args.includes('@soulbatical/create-app'));
+  assert.ok(helper.args.includes('--ignore-scripts'), 'lifecycle scripts must not run for the helper install');
+  assert.equal(helper.args[helper.args.indexOf('--prefix') + 1], '/tmp/tool');
+  assert.equal(h.writes.some(({ path }) => path.startsWith('/projects/my-app/node_modules')), false);
+});
+
 test('a non-empty target directory stops everything before any command runs', async () => {
-  const h = harness({ existing: false });
+  const h = harness({ directoryFree: false });
   await assert.rejects(installProject(h.options), /bestaat al en is niet leeg/);
   assert.equal(h.execs.length, 0);
   assert.equal(h.writes.length, 0);
@@ -109,22 +150,61 @@ test('the helper directory is cleaned up even when the scaffolder fails', async 
   };
 
   await assert.rejects(installProject(h.options), /scaffolder crashed/);
-  assert.deepEqual(h.removed, ['/tmp/tool']);
+  assert.deepEqual(h.removedDirectories, ['/tmp/tool']);
+});
+
+test('storing the credential replaces only our own line and keeps the rest', async () => {
+  const written = [];
+  const existing = [
+    '@other:registry=https://other.example/',
+    '//other.example/:_authToken=keep-me',
+    `${AUTH_KEY}:_authToken=stale-value`,
+    'engine-strict=true',
+    '',
+  ].join('\n');
+
+  const path = await storeRegistryCredential(files, {
+    path: '/home/customer/.npmrc',
+    read: async () => existing,
+    write: async (p, content, options) => { written.push({ p, content, options }); },
+    remove: async () => {},
+  });
+
+  assert.equal(path, '/home/customer/.npmrc');
+  const { content, options } = written.at(-1);
+  assert.match(content, /@other:registry=https:\/\/other\.example\//);
+  assert.match(content, /\/\/other\.example\/:_authToken=keep-me/);
+  assert.match(content, /engine-strict=true/);
+  assert.equal(content.includes('stale-value'), false, 'the previous token for this registry must be replaced');
+  assert.equal(content.match(/gitlab\.example/g).length, 1, 'exactly one entry for this registry');
+  assert.equal(options.mode, 0o600);
+});
+
+test('storing the credential works when there is no user npmrc yet', async () => {
+  const written = [];
+  const missing = async () => { const error = new Error('nope'); error.code = 'ENOENT'; throw error; };
+
+  await storeRegistryCredential(files, {
+    path: '/home/customer/.npmrc',
+    read: missing,
+    write: async (p, content) => { written.push(content); },
+    remove: async () => {},
+  });
+
+  assert.equal(written.at(-1), `${AUTH_KEY}:_authToken=deploy-token-value\n`);
 });
 
 test('.env is added to .gitignore exactly once', async () => {
   const written = [];
-  const read = async () => 'node_modules\n.env\n';
-  await ensureEnvIsIgnored('/projects/my-app', { read, write: async (p, c) => written.push({ p, c }) });
+  await ensureEnvIsIgnored('/projects/my-app', {
+    read: async () => 'node_modules\n.env\n',
+    write: async (p, c) => written.push({ p, c }),
+  });
   assert.equal(written.length, 0, 'already ignored, nothing to do');
 
-  const readWithout = async () => 'node_modules';
-  await ensureEnvIsIgnored('/projects/my-app', { read: readWithout, write: async (p, c) => written.push({ p, c }) });
-  assert.equal(written.length, 1);
-  assert.equal(written[0].c, 'node_modules\n.env\n');
-
-  const missing = async () => { const e = new Error('nope'); e.code = 'ENOENT'; throw e; };
-  await ensureEnvIsIgnored('/projects/my-app', { read: missing, write: async (p, c) => written.push({ p, c }) });
-  assert.equal(written.at(-1).c, '.env\n');
-  assert.equal(written.at(-1).p, join('/projects/my-app', '.gitignore'));
+  await ensureEnvIsIgnored('/projects/my-app', {
+    read: async () => 'node_modules',
+    write: async (p, c) => written.push({ p, c }),
+  });
+  assert.equal(written.at(-1).c, 'node_modules\n.env\n');
 });

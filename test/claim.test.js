@@ -145,33 +145,83 @@ test('refuses a newline in any value that becomes an env line', () => {
   assert.throws(() => validateClaim(keys), /control characters/);
 });
 
-test('an injected env line cannot reach the rendered .env', () => {
-  const value = payload();
-  value.license_key = 'good-key\nNODE_OPTIONS=--require /tmp/evil.js';
-  assert.throws(() => renderProjectFiles(validateClaim(value)));
+test('the project config carries no secret and no placeholder npm would send literally', () => {
+  const { projectNpmrc, userNpmrcEntry, env } = renderProjectFiles(validateClaim(payload()));
 
-  const { env } = renderProjectFiles(validateClaim(payload()));
-  assert.equal(env.split('\n').filter((line) => line.includes('=')).length, 3);
-  assert.equal(env.includes('NODE_OPTIONS'), false);
-});
+  // npm does not read .env, so a ${NPM_TOKEN} placeholder in the project config
+  // is sent to the registry verbatim and the customer gets a bare 401.
+  assert.equal(projectNpmrc.includes('deploy-token-value'), false);
+  assert.equal(projectNpmrc.includes('${NPM_TOKEN}'), false);
+  assert.equal(projectNpmrc.includes('_authToken'), false);
+  assert.match(projectNpmrc, /@soulbatical:registry=/);
+  assert.match(projectNpmrc, /engine-strict=true/);
 
-test('the token goes into .env, never into .npmrc', () => {
-  const { npmrc, env } = renderProjectFiles(validateClaim(payload()));
+  // The credential goes where npm actually looks for it.
+  assert.equal(
+    userNpmrcEntry,
+    '//gitlab.com/api/v4/projects/85262758/packages/npm/:_authToken=deploy-token-value',
+  );
 
-  assert.equal(npmrc.includes('deploy-token-value'), false);
-  assert.match(npmrc, /@soulbatical:registry=/);
-  assert.match(npmrc, /:_authToken=\$\{NPM_TOKEN\}/);
-  assert.match(npmrc, /engine-strict=true/);
-
-  assert.match(env, /^NPM_TOKEN=deploy-token-value$/m);
   assert.match(env, /^TETRA_LICENSE_KEY=eyJhbGciOiJFZERTQSJ9\.licence$/m);
   assert.match(env, /^TETRA_LICENSE_PUBLIC_KEYS_JSON=\{"keys":\[\]\}$/m);
 });
 
+test('an injected env line cannot reach the rendered .env', () => {
+  const value = payload();
+  value.license_key = 'good-key\nNODE_OPTIONS=--require /tmp/evil.js';
+  assert.throws(() => validateClaim(value), /control characters/);
+
+  const { env } = renderProjectFiles(validateClaim(payload()));
+  assert.equal(env.includes('NODE_OPTIONS'), false);
+});
+
 test('the customer never needs the org-wide token or Doppler', () => {
-  const { npmrc, env } = renderProjectFiles(validateClaim(payload()));
+  const { projectNpmrc, env } = renderProjectFiles(validateClaim(payload()));
   for (const forbidden of ['npm.pkg.github.com', 'doppler', 'shared/prd']) {
-    assert.equal(npmrc.toLowerCase().includes(forbidden), false, `${forbidden} in .npmrc`);
-    assert.equal(env.toLowerCase().includes(forbidden), false, `${forbidden} in .env`);
+    assert.equal(projectNpmrc.toLowerCase().includes(forbidden), false);
+    assert.equal(env.toLowerCase().includes(forbidden), false);
+  }
+});
+
+// A credential in the URL would be written into the file the customer commits,
+// which is exactly what splitting project and user config is meant to prevent.
+test('refuses a registry URL carrying credentials', () => {
+  for (const url of [
+    'https://deploy:s3cr3t@gitlab.com/api/v4/projects/85262758/packages/npm/',
+    'https://deploy@gitlab.com/api/v4/projects/85262758/packages/npm/',
+  ]) {
+    const value = payload();
+    value.package_registry.npm_registry_url = url;
+    assert.throws(() => validateClaim(value), /containing credentials/, `expected ${url} to be refused`);
+  }
+});
+
+// The scaffolder is our own infrastructure, so the set of hosts it can live on
+// is short and known. Consistency between the fields is not enough: a control
+// plane that sets both to the same attacker host would otherwise pass.
+test('refuses a registry on a host we do not ship from', () => {
+  const value = payload();
+  value.package_registry.npm_registry_url = 'https://evil.example/npm/';
+  value.package_registry.npmrc_template = [
+    '@soulbatical:registry=https://evil.example/npm/',
+    '//evil.example/npm/:_authToken=${NPM_TOKEN}',
+  ].join('\n');
+  assert.throws(() => validateClaim(value), /unexpected host/);
+});
+
+test('accepts every host we actually ship from', () => {
+  for (const [host, path] of [
+    ['gitlab.com', '/api/v4/projects/85262758/packages/npm/'],
+    ['npm.pkg.github.com', '/'],
+    ['registry.tetrasaas.com', '/'],
+  ]) {
+    const url = `https://${host}${path}`;
+    const value = payload();
+    value.package_registry.npm_registry_url = url;
+    value.package_registry.npmrc_template = [
+      `@soulbatical:registry=${url}`,
+      `//${host}${path}:_authToken=\${NPM_TOKEN}`,
+    ].join('\n');
+    assert.doesNotThrow(() => validateClaim(value), `expected ${host} to be accepted`);
   }
 });

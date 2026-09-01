@@ -11,12 +11,8 @@ const claim = {
     provider: 'gitlab',
     scope: '@soulbatical',
     url: 'https://gitlab.com/api/v4/projects/85262758/packages/npm/',
+    authKey: '//gitlab.com/api/v4/projects/85262758/packages/npm/',
     token: 'deploy-token-value',
-    npmrcTemplate: [
-      '@soulbatical:registry=https://gitlab.com/api/v4/projects/85262758/packages/npm/',
-      '//gitlab.com/api/v4/projects/85262758/packages/npm/:_authToken=${NPM_TOKEN}',
-      'always-auth=true',
-    ].join('\n'),
   },
   licenseVerification: { publicKeysJson: '{"keys":[]}' },
 };
@@ -72,8 +68,9 @@ test('approval leads to a real project, and no secret is ever printed', async ()
   assert.equal(installs.length, 1);
   assert.equal(installs[0].projectName, 'horeca-crm');
   assert.equal(installs[0].projectPath, '/tmp/horeca-crm');
-  assert.match(installs[0].files.npmrc, /@soulbatical:registry=/);
-  assert.match(installs[0].files.env, /NPM_TOKEN=deploy-token-value/);
+  assert.match(installs[0].files.projectNpmrc, /@soulbatical:registry=/);
+  assert.equal(installs[0].files.projectNpmrc.includes('deploy-token-value'), false);
+  assert.match(installs[0].files.userNpmrcEntry, /_authToken=deploy-token-value$/);
 
   assert.equal(client.calls[2][0], 'claim');
   assert.equal(client.calls[2][1], 'grant-secret');
