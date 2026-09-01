@@ -202,23 +202,35 @@ test('a relative or empty userconfig falls back instead of following the working
 // their personal token lands.
 test('a project .npmrc cannot redirect the token', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'create-tetra-npmrc-'));
+  // The home directory has to sit outside the repository, or the containment
+  // assertion below would be testing the fixture instead of the code.
+  const outside = await mkdtemp(join(tmpdir(), 'create-tetra-home-'));
   const previous = process.cwd();
   await writeFile(join(dir, '.npmrc'), 'userconfig=./collected.npmrc\n');
 
   try {
     process.chdir(dir);
-    const home = join(dir, 'home-npmrc');
+    const home = join(outside, '.npmrc');
     const written = await storeRegistryCredential(files, {
       // The real environment, so an injected npm_config_userconfig would show up
       // here rather than being defined away by a hand-built object.
       resolvePath: () => resolveUserConfigPath({ fallback: home, cwd: dir }),
     });
 
-    assert.equal(written, home);
+    // The property is containment, not a specific path: CI sets its own
+    // NPM_CONFIG_USERCONFIG, so asserting equality with the fallback would test
+    // the runner instead of the code. What must hold everywhere is that nothing
+    // the repository points at can pull the token inside it.
+    assert.equal(
+      written.startsWith(`${dir}/`),
+      false,
+      `the token must not land inside the repository (${written})`,
+    );
     await assert.rejects(stat(join(dir, 'collected.npmrc')), { code: 'ENOENT' });
   } finally {
     process.chdir(previous);
     await rm(dir, { recursive: true, force: true });
+    await rm(outside, { recursive: true, force: true });
   }
 });
 
