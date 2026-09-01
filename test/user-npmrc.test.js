@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { lstat, mkdtemp, readFile, realpath, rm, stat, symlink, writeFile } from 'node:fs/promises';
+import { lstat, mkdtemp, readFile, rm, stat, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -69,7 +69,7 @@ test('a symlinked npmrc is written through, not replaced', async () => {
     const written = await storeRegistryCredential(files, { path: link });
 
     assert.equal((await lstat(link)).isSymbolicLink(), true, 'the symlink must survive');
-    assert.equal(written, await realpath(real), 'the resolved target is what was written');
+    assert.equal(written, real, 'the link target is what was written');
     const content = await readFile(real, 'utf8');
     assert.match(content, /keep-me/);
     assert.match(content, /new-token/);
@@ -128,62 +128,72 @@ test('a missing npmrc is created with just our entry', async () => {
 
 // npm reads the userconfig the environment points at, not necessarily the one in
 // the home directory. Guessing writes a token into a file npm never reads.
-test('the userconfig path comes from npm, not from a guess', async () => {
-  const resolved = await resolveUserConfigPath({
-    exec: async (command, args) => {
-      assert.equal(command, 'npm');
-      assert.deepEqual(args, ['config', 'get', 'userconfig']);
-      return { stdout: '/elsewhere/custom-npmrc\n', stderr: '' };
-    },
-    fallback: '/home/customer/.npmrc',
-  });
-  assert.equal(resolved, '/elsewhere/custom-npmrc');
+// Deliberately not via `npm config get userconfig`: that resolution honours a
+// project .npmrc, which would let whatever repository the customer stands in
+// decide where their personal registry token is written.
+test('the userconfig path comes from the environment, never from the working directory', () => {
+  assert.equal(
+    resolveUserConfigPath({ env: { NPM_CONFIG_USERCONFIG: '/elsewhere/custom-npmrc' }, fallback: '/home/c/.npmrc' }),
+    '/elsewhere/custom-npmrc',
+  );
+  assert.equal(
+    resolveUserConfigPath({ env: { npm_config_userconfig: '/lower/custom-npmrc' }, fallback: '/home/c/.npmrc' }),
+    '/lower/custom-npmrc',
+  );
 });
 
-test('the home directory is only the fallback when npm cannot answer', async () => {
-  for (const exec of [
-    async () => { throw new Error('npm missing'); },
-    async () => ({ stdout: '\n', stderr: '' }),
-    async () => ({ stdout: 'undefined\n', stderr: '' }),
+test('a relative or empty userconfig falls back instead of following the working directory', () => {
+  for (const env of [
+    {},
+    { NPM_CONFIG_USERCONFIG: '' },
+    { NPM_CONFIG_USERCONFIG: '   ' },
+    { NPM_CONFIG_USERCONFIG: './collected.npmrc' },
+    { NPM_CONFIG_USERCONFIG: '../sneaky.npmrc' },
   ]) {
     assert.equal(
-      await resolveUserConfigPath({ exec, fallback: '/home/customer/.npmrc' }),
+      resolveUserConfigPath({ env, fallback: '/home/customer/.npmrc' }),
       '/home/customer/.npmrc',
+      `expected ${JSON.stringify(env)} to fall back`,
     );
   }
 });
 
-// An indented _authToken line is active config, so the trim in the filter is
-// load-bearing rather than cosmetic.
-test('an indented stale entry is removed too', async () => {
+// A repository the customer merely cloned must not be able to redirect where
+// their personal token lands.
+test('a project .npmrc cannot redirect the token', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'create-tetra-npmrc-'));
-  const path = join(dir, '.npmrc');
-  await writeFile(path, `   ${AUTH_KEY}:_authToken=stale-indented\n`);
+  const previous = process.cwd();
+  await writeFile(join(dir, '.npmrc'), 'userconfig=./collected.npmrc\n');
 
   try {
-    const content = await readFile(await storeRegistryCredential(files, { path }), 'utf8');
-    assert.equal(content.includes('stale-indented'), false);
-    assert.equal(content.match(/gitlab\.example/g).length, 1);
+    process.chdir(dir);
+    const home = join(dir, 'home-npmrc');
+    const written = await storeRegistryCredential(files, {
+      resolvePath: () => resolveUserConfigPath({ env: {}, fallback: home }),
+    });
+
+    assert.equal(written, home);
+    await assert.rejects(stat(join(dir, 'collected.npmrc')), { code: 'ENOENT' });
   } finally {
+    process.chdir(previous);
     await rm(dir, { recursive: true, force: true });
   }
 });
 
-// Without an explicit path this must ask npm where the userconfig is, not assume
-// the home directory: guessing writes the token into a file npm never reads.
-test('without an explicit path the userconfig is resolved, not assumed', async () => {
+// Dotfiles that are not checked out yet leave a dangling link, and replacing it
+// detaches the customer from their own config management just the same.
+test('a dangling symlink is followed, not replaced by a regular file', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'create-tetra-npmrc-'));
-  const resolved = join(dir, 'resolved-npmrc');
-  let asked = false;
+  const missing = join(dir, 'not-yet-checked-out');
+  const link = join(dir, '.npmrc');
+  await symlink(missing, link);
 
   try {
-    const written = await storeRegistryCredential(files, {
-      resolvePath: async () => { asked = true; return resolved; },
-    });
+    const written = await storeRegistryCredential(files, { path: link });
 
-    assert.equal(asked, true, 'the userconfig path must be resolved, not guessed');
-    assert.equal(written, resolved, 'the resolved path is where the token lands');
-    assert.match(await readFile(resolved, 'utf8'), /new-token/);
+    assert.equal((await lstat(link)).isSymbolicLink(), true, 'the symlink must survive');
+    assert.equal(written, missing);
+    assert.match(await readFile(missing, 'utf8'), /new-token/);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

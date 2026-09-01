@@ -87,6 +87,8 @@ test('a denied approval claims nothing and installs nothing', async () => {
 
   await assert.rejects(
     runCreateTetra({
+      argv: ['my-app'],
+      cwd: '/tmp',
       version: '1.0.0',
       client,
       checkDirectory: async () => true,
@@ -107,6 +109,8 @@ test('an expired approval never reaches the claim', async () => {
 
   await assert.rejects(
     runCreateTetra({
+      argv: ['my-app'],
+      cwd: '/tmp',
       version: '1.0.0',
       client,
       checkDirectory: async () => true,
@@ -195,4 +199,35 @@ test('the closing instructions point at a directory that exists', async () => {
     formatNextSteps({ projectPath: '/tmp/deep/nested/app', projectName: 'app' }, { cwd: '/tmp' }),
     /cd deep\/nested\/app/,
   );
+});
+
+// The scaffolder enforces kebab-case and does so after the single-use grant is
+// already spent, so this has to be caught before the approval is requested.
+test('an unusable project name costs no approval', async () => {
+  const { projectNameProblem } = await import('../src/cli.js');
+
+  for (const name of ['MyApp', 'my_app', 'Klant Demo', '2048', 'tetra.demo', '-app']) {
+    assert.ok(projectNameProblem(name), `${name} must be rejected`);
+  }
+  for (const name of ['my-app', 'app', 'tetra-demo-2']) {
+    assert.equal(projectNameProblem(name), null, `${name} must be accepted`);
+  }
+
+  const client = stubClient();
+  await assert.rejects(
+    runCreateTetra({
+      argv: ['MyApp'],
+      cwd: '/tmp',
+      version: '1.0.0',
+      client,
+      checkDirectory: async () => true,
+      browser: () => { throw new Error('must not open a browser'); },
+      write: () => {},
+      sleep: async () => {},
+      install: async () => { throw new Error('must not install'); },
+    }),
+    /kleine letters, cijfers en streepjes/,
+  );
+
+  assert.deepEqual(client.calls, [], 'the control plane must not be contacted');
 });

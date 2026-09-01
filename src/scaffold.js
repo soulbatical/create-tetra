@@ -1,7 +1,7 @@
 import { execFile } from 'node:child_process';
-import { chmod, mkdir, mkdtemp, readFile, readdir, realpath, rename, rm, writeFile } from 'node:fs/promises';
+import { chmod, lstat, mkdir, mkdtemp, readFile, readdir, readlink, rename, rm, writeFile } from 'node:fs/promises';
 import { homedir, tmpdir } from 'node:os';
-import { join, relative } from 'node:path';
+import { dirname, isAbsolute, join, relative } from 'node:path';
 import { promisify } from 'node:util';
 
 const run = promisify(execFile);
@@ -29,18 +29,20 @@ async function writeSecretFile(path, content, { write: writeImpl = writeFile, re
   await writeImpl(path, content, { mode: 0o600, flag: 'wx' });
 }
 
-// npm reads the userconfig the environment points at, which is not necessarily
-// the one in the home directory. Guessing gets it wrong for anyone who sets
-// NPM_CONFIG_USERCONFIG: we would write a token into a file npm never reads and
-// then report success.
-export async function resolveUserConfigPath({ exec = run, fallback = join(homedir(), '.npmrc') } = {}) {
-  try {
-    const { stdout } = await exec('npm', ['config', 'get', 'userconfig'], { env: process.env });
-    const path = String(stdout).trim();
-    return path === '' || path === 'undefined' ? fallback : path;
-  } catch {
-    return fallback;
-  }
+// npm reads the userconfig the environment points at rather than the one in the
+// home directory, so an explicit NPM_CONFIG_USERCONFIG has to be honoured.
+//
+// Deliberately not via `npm config get userconfig`: that resolution is
+// cwd-sensitive and honours `userconfig=` from a project .npmrc, which would let
+// whatever repository the customer happens to stand in decide where their
+// personal registry token gets written. Reading the environment cannot be
+// steered that way. A relative value is ignored for the same reason — it would
+// only have meaning relative to a directory we do not control.
+export function resolveUserConfigPath({ env = process.env, fallback = join(homedir(), '.npmrc') } = {}) {
+  const configured = (env.npm_config_userconfig ?? env.NPM_CONFIG_USERCONFIG ?? '').trim();
+  if (configured === '') return fallback;
+  if (configured.startsWith('~/')) return join(homedir(), configured.slice(2));
+  return isAbsolute(configured) ? configured : fallback;
 }
 
 // This is the one file create-tetra touches that it does not own. It may hold
@@ -69,20 +71,23 @@ export async function storeRegistryCredential(
     write: writeImpl = writeFile,
     remove = rm,
     move = rename,
-    resolveLink = realpath,
+    describeLink = async (candidate) => lstat(candidate).catch(() => null),
+    readLinkImpl = readlink,
     resolvePath = resolveUserConfigPath,
   } = {},
 ) {
-  const configured = path ?? (await resolvePath());
+  const configured = path ?? resolvePath();
 
   // A symlinked npmrc usually points into a dotfiles repository. Replacing the
   // link would silently detach the customer from their own config management,
-  // so write through to whatever it resolves to instead.
+  // so write through to whatever it points at. lstat rather than realpath,
+  // because a dangling link — dotfiles not checked out yet — must be followed
+  // too instead of being quietly turned into a regular file.
   let target = configured;
-  try {
-    target = await resolveLink(configured);
-  } catch (error) {
-    if (error.code !== 'ENOENT') throw error;
+  const link = await describeLink(configured);
+  if (link?.isSymbolicLink()) {
+    const destination = await readLinkImpl(configured);
+    target = isAbsolute(destination) ? destination : join(dirname(configured), destination);
   }
 
   let current = '';
@@ -143,6 +148,8 @@ export async function installProject({
   // never contains our helper node_modules.
   const toolDirectory = await makeTempDirectory(join(tmpdir(), 'create-tetra-'));
   const toolConfig = join(toolDirectory, '.npmrc');
+  let installed = true;
+  let installFailure = null;
 
   try {
     await writeSecretFile(
@@ -190,20 +197,44 @@ export async function installProject({
     // Buffered output on the longest step is a trap: the default 1 MB cap makes
     // a chatty install fail after it actually succeeded.
     write('Dependencies installeren, dit duurt even...\n');
-    await exec('npm', ['install'], {
-      cwd: projectPath,
-      env: process.env,
-      maxBuffer: 64 * 1024 * 1024,
-      timeout: 15 * 60_000,
-    });
+    try {
+      await exec('npm', ['install'], {
+        cwd: projectPath,
+        env: process.env,
+        maxBuffer: 64 * 1024 * 1024,
+        timeout: 15 * 60_000,
+      });
+    } catch (error) {
+      // This is the longest and least reliable step, and it sits past the point
+      // of no return: the grant is spent and the directory is no longer empty,
+      // so re-running create-tetra is not an option. The project itself is fine
+      // and one command away, so say that instead of failing opaquely.
+      const reason = error.killed && error.signal === 'SIGTERM'
+        ? 'het duurde langer dan 15 minuten'
+        : (error.message ?? 'onbekende fout').split('\n')[0];
+      installed = false;
+      installFailure = reason;
+      write([
+        '',
+        `Het project staat in ${projectPath} en je registry-token is opgeslagen.`,
+        `Alleen het installeren van de dependencies is afgebroken (${reason}).`,
+        '',
+        'Draai om verder te gaan:',
+        `  cd ${projectPath} && npm install`,
+        '',
+      ].join('\n'));
+    }
   } finally {
     await removeDirectory(toolDirectory, { recursive: true, force: true });
   }
 
-  return { projectPath, projectName };
+  return { projectPath, projectName, installed, installFailure };
 }
 
-export function formatNextSteps({ projectPath, projectName }, { cwd = process.cwd() } = {}) {
+export function formatNextSteps({ projectPath, projectName, installed = true }, { cwd = process.cwd() } = {}) {
+  // The recovery instructions were already printed; do not follow them with a
+  // cheerful "klaar" that contradicts them.
+  if (!installed) return '';
   // basename is only the right thing to cd into when the project is a direct
   // child of where the customer stands, which `npx create-tetra` without an
   // argument is not.

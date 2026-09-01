@@ -200,3 +200,37 @@ test('.env is added to .gitignore exactly once', async () => {
   });
   assert.equal(written.at(-1).c, 'node_modules\n.env\n');
 });
+
+// The final install sits past the point of no return: the grant is spent and the
+// directory is no longer empty, so a bare failure leaves the customer stuck.
+test('a failed dependency install leaves a recoverable project, not a dead end', async () => {
+  const h = harness();
+  let output = '';
+  h.options.write = (text) => { output += text; };
+  const original = h.options.exec;
+  h.options.exec = async (command, args, options) => {
+    if (command === 'npm' && args[0] === 'install' && options.cwd === '/projects/my-app') {
+      throw Object.assign(new Error('Command failed: npm install'), { killed: true, signal: 'SIGTERM' });
+    }
+    return original(command, args, options);
+  };
+
+  const result = await installProject(h.options);
+
+  assert.equal(result.installed, false);
+  assert.match(output, /Het project staat in \/projects\/my-app/);
+  assert.match(output, /langer dan 15 minuten/);
+  assert.match(output, /cd \/projects\/my-app && npm install/);
+});
+
+test('the closing message does not contradict the recovery instructions', async () => {
+  const { formatNextSteps } = await import('../src/scaffold.js');
+  assert.equal(
+    formatNextSteps({ projectPath: '/p/app', projectName: 'app', installed: false }, { cwd: '/p' }),
+    '',
+  );
+  assert.match(
+    formatNextSteps({ projectPath: '/p/app', projectName: 'app', installed: true }, { cwd: '/p' }),
+    /npm run dev/,
+  );
+});

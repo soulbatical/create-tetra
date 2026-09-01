@@ -81,6 +81,12 @@ function requireRegistryUrl(value, label, { allowedHosts = ALLOWED_REGISTRY_HOST
   if (url.username || url.password) {
     throw new Error(`Control plane returned a ${label} containing credentials.`);
   }
+  // npm appends the package path to the registry, so a query string ends up in
+  // the middle of the request URI and matches no auth key: the customer gets an
+  // opaque 404 with no token attached.
+  if (url.search || url.hash) {
+    throw new Error(`Control plane returned a ${label} with a query or fragment.`);
+  }
   if (!allowedHosts.has(url.hostname)) {
     throw new Error(`Control plane returned a ${label} on an unexpected host.`);
   }

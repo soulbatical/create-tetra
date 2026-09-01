@@ -7,8 +7,14 @@ export function openBrowser(url, { platform = process.platform, spawnImpl = spaw
   if (parsed.protocol !== 'https:' || parsed.origin !== origin) {
     throw new Error('Refusing to open an untrusted browser URL.');
   }
-  const command = platform === 'darwin' ? 'open' : platform === 'win32' ? 'cmd' : 'xdg-open';
-  const args = platform === 'win32' ? ['/c', 'start', '', parsed.toString()] : [parsed.toString()];
+  // Not `cmd /c start`: cmd.exe re-parses its own command line, where `&` is a
+  // command separator, and Node does not escape that when cmd is the explicit
+  // target. A URL is attacker-influenced input here, so use a handler that
+  // takes the URL as a plain argument instead.
+  const command = platform === 'darwin' ? 'open' : platform === 'win32' ? 'rundll32' : 'xdg-open';
+  const args = platform === 'win32'
+    ? ['url.dll,FileProtocolHandler', parsed.toString()]
+    : [parsed.toString()];
   const child = spawnImpl(command, args, { detached: true, stdio: 'ignore', shell: false });
   child.unref();
 }

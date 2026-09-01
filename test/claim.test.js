@@ -264,3 +264,16 @@ test('a registry without a trailing slash is canonicalised before anything is de
   assert.match(projectNpmrc, /packages\/npm\/$/m);
   assert.match(userNpmrcEntry, /packages\/npm\/:_authToken=/);
 });
+
+// npm appends the package path to the registry, so a query string lands in the
+// middle of the request URI, matches no auth key, and yields an opaque 404.
+test('refuses a registry URL with a query string or fragment', () => {
+  for (const url of [
+    'https://gitlab.com/api/v4/projects/85262758/packages/npm/?token=1',
+    'https://gitlab.com/api/v4/projects/85262758/packages/npm/#frag',
+  ]) {
+    const value = payload();
+    value.package_registry.npm_registry_url = url;
+    assert.throws(() => validateClaim(value), /query or fragment/, `expected ${url} to be refused`);
+  }
+});

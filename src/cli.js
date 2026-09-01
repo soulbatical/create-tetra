@@ -33,6 +33,17 @@ organisatie, licentie en project. Daarna richt create-tetra je project in met je
 eigen registry-toegang en licentie; je hoeft zelf geen token te regelen.
 `;
 
+// The scaffolder enforces this, and it does so after we have already spent the
+// customer's single-use grant. Checking it here costs nothing and turns the most
+// likely first command — `npx create-tetra MyApp` — into a useful message
+// instead of a dead end.
+const PROJECT_NAME = /^[a-z][a-z0-9-]*$/;
+
+export function projectNameProblem(name) {
+  if (PROJECT_NAME.test(name)) return null;
+  return `De projectnaam "${name}" kan niet: gebruik kleine letters, cijfers en streepjes, beginnend met een letter (bijvoorbeeld my-app).`;
+}
+
 function parseArgs(argv, cwd) {
   if (argv.includes('--help') || argv.includes('-h')) return { help: true };
   if (argv.includes('--version') || argv.includes('-v')) return { version: true };
@@ -61,6 +72,9 @@ export async function runCreateTetra({
 
   const projectName = basename(parsed.projectPath) || 'tetra-app';
   write(`Tetra\nProject: ${projectName}\n\n`);
+
+  const nameProblem = projectNameProblem(projectName);
+  if (nameProblem) throw new Error(nameProblem);
 
   // Before anything else: a target we cannot use must not cost the customer an
   // approval. A grant is single-use, so failing after it is spent means they
@@ -110,4 +124,5 @@ export async function runCreateTetra({
 export async function main() {
   const run = await runCreateTetra();
   if (run.kind === 'unavailable') process.exitCode = 1;
+  if (run.kind === 'installed' && run.project.installed === false) process.exitCode = 1;
 }

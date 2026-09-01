@@ -10,7 +10,7 @@ Publieke, dependencyvrije bootstrap voor Tetra-applicaties.
 npx create-tetra my-app
 ```
 
-Meer is het niet. Geen token om te kopiëren, geen registry om in te stellen, geen
+Meer is het niet. De projectnaam is kleine letters, cijfers en streepjes. Geen token om te kopiëren, geen registry om in te stellen, geen
 Doppler.
 
 ## Wat er gebeurt
@@ -40,8 +40,11 @@ create-tetra volgt die scheiding:
   geraden, dus een eigen `NPM_CONFIG_USERCONFIG` wordt gerespecteerd. Bestaande
   regels voor andere registries blijven behouden; alleen een eerdere regel voor
   deze registry wordt vervangen. Het bestand wordt atomair vervangen, dus een
-  mislukte schrijfactie laat je bestaande configuratie ongemoeid, en een
-  symlink naar je dotfiles blijft een symlink.
+  mislukte schrijfactie laat je bestaande configuratie ongemoeid, en een symlink
+  naar je dotfiles blijft een symlink — ook als het doel nog niet uitgecheckt is.
+  Omdat er vanaf dat moment een token in staat, krijgt het bestand modus 0600.
+  Welk bestand het is wordt uit je omgeving gelezen en niet uit de map waar je
+  toevallig staat, zodat een gekloonde repo dat niet kan omleiden.
 - `<project>/.env` krijgt je licentiesleutel, en `NPM_TOKEN` voor CI-omgevingen
   waar geen gebruikersconfiguratie bestaat. Dit bestand hoort niet in git;
   create-tetra zet het voor je in `.gitignore`.

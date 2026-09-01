@@ -32,8 +32,8 @@ test('the url is passed as an argument, never through a shell', () => {
   openBrowser(url, { platform: 'win32', spawnImpl });
   openBrowser(url, { platform: 'linux', spawnImpl });
 
-  assert.deepEqual(calls.map(({ command }) => command), ['open', 'cmd', 'xdg-open']);
-  assert.deepEqual(calls[1].args, ['/c', 'start', '', url]);
+  assert.deepEqual(calls.map(({ command }) => command), ['open', 'rundll32', 'xdg-open']);
+  assert.deepEqual(calls[1].args, ['url.dll,FileProtocolHandler', url]);
   for (const call of calls) {
     assert.equal(call.options.shell, false);
     assert.ok(call.args.includes(url));
