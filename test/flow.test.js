@@ -175,3 +175,24 @@ test('an unusable target directory costs no approval and spends no grant', async
 
   assert.deepEqual(client.calls, [], 'the control plane must not be contacted at all');
 });
+
+// basename is only the right thing to cd into when the project is a direct child
+// of where the customer stands, and `npx create-tetra` without an argument is not.
+test('the closing instructions point at a directory that exists', async () => {
+  const { formatNextSteps } = await import('../src/scaffold.js');
+
+  assert.equal(
+    formatNextSteps({ projectPath: '/home/me/work', projectName: 'work' }, { cwd: '/home/me/work' })
+      .includes('cd '),
+    false,
+    'there is nothing to cd into when the project is the current directory',
+  );
+  assert.match(
+    formatNextSteps({ projectPath: '/home/me/work/my-app', projectName: 'my-app' }, { cwd: '/home/me/work' }),
+    /cd my-app/,
+  );
+  assert.match(
+    formatNextSteps({ projectPath: '/tmp/deep/nested/app', projectName: 'app' }, { cwd: '/tmp' }),
+    /cd deep\/nested\/app/,
+  );
+});

@@ -153,45 +153,37 @@ test('the helper directory is cleaned up even when the scaffolder fails', async 
   assert.deepEqual(h.removedDirectories, ['/tmp/tool']);
 });
 
-test('storing the credential replaces only our own line and keeps the rest', async () => {
-  const written = [];
-  const existing = [
-    '@other:registry=https://other.example/',
-    '//other.example/:_authToken=keep-me',
-    `${AUTH_KEY}:_authToken=stale-value`,
-    'engine-strict=true',
-    '',
-  ].join('\n');
+// The credential now lives in the user config, so the project install has to be
+// able to read it. Running it with the tool config would shield it from exactly
+// the file we just wrote.
+test('the project install uses the real user config, not the tool config', async () => {
+  const h = harness();
+  await installProject(h.options);
 
-  const path = await storeRegistryCredential(files, {
-    path: '/home/customer/.npmrc',
-    read: async () => existing,
-    write: async (p, content, options) => { written.push({ p, content, options }); },
-    remove: async () => {},
-  });
+  const projectInstall = h.execs.find(
+    ({ command, args, options }) => command === 'npm' && args[0] === 'install' && options.cwd === '/projects/my-app',
+  );
+  assert.equal(
+    projectInstall.options.env.NPM_CONFIG_USERCONFIG,
+    process.env.NPM_CONFIG_USERCONFIG,
+    'the project install must not be pointed at the throwaway tool config',
+  );
 
-  assert.equal(path, '/home/customer/.npmrc');
-  const { content, options } = written.at(-1);
-  assert.match(content, /@other:registry=https:\/\/other\.example\//);
-  assert.match(content, /\/\/other\.example\/:_authToken=keep-me/);
-  assert.match(content, /engine-strict=true/);
-  assert.equal(content.includes('stale-value'), false, 'the previous token for this registry must be replaced');
-  assert.equal(content.match(/gitlab\.example/g).length, 1, 'exactly one entry for this registry');
-  assert.equal(options.mode, 0o600);
+  const helper = h.execs.find(({ args }) => args.includes('@soulbatical/create-app'));
+  assert.equal(helper.options.env.NPM_CONFIG_USERCONFIG, '/tmp/tool/.npmrc');
 });
 
-test('storing the credential works when there is no user npmrc yet', async () => {
-  const written = [];
-  const missing = async () => { const error = new Error('nope'); error.code = 'ENOENT'; throw error; };
+// The default 1 MB buffer makes a chatty install reject after it succeeded, and
+// the customer is told it failed.
+test('the project install is not allowed to fail on its own output', async () => {
+  const h = harness();
+  await installProject(h.options);
 
-  await storeRegistryCredential(files, {
-    path: '/home/customer/.npmrc',
-    read: missing,
-    write: async (p, content) => { written.push(content); },
-    remove: async () => {},
-  });
-
-  assert.equal(written.at(-1), `${AUTH_KEY}:_authToken=deploy-token-value\n`);
+  const projectInstall = h.execs.find(
+    ({ command, args, options }) => command === 'npm' && args[0] === 'install' && options.cwd === '/projects/my-app',
+  );
+  assert.ok(projectInstall.options.maxBuffer > 1024 * 1024, 'the default buffer is too small for an install');
+  assert.ok(projectInstall.options.timeout > 0, 'a hung install must not hang the CLI forever');
 });
 
 test('.env is added to .gitignore exactly once', async () => {

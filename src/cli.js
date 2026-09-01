@@ -103,7 +103,7 @@ export async function runCreateTetra({
     checkDirectory,
   });
 
-  write(formatNextSteps(result));
+  write(formatNextSteps(result, { cwd }));
   return { kind: 'installed', project: result };
 }
 

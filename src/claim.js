@@ -50,7 +50,22 @@ function requireLine(value, label, { maxLength = 4096 } = {}) {
   return value;
 }
 
-function requireRegistryUrl(value, label, { allowedHosts = ALLOWED_REGISTRY_HOSTS } = {}) {
+// npm treats a registry with and without a trailing slash as the same thing, but
+// when two auth entries exist for one registry the trailing-slash form wins. So
+// we canonicalise before deriving anything: the key we write must be the key npm
+// prefers, or a stale entry of the customer's silently outranks it.
+function canonicalRegistryUrl(url) {
+  const canonical = new URL(url.href);
+  if (!canonical.pathname.endsWith('/')) canonical.pathname += '/';
+  return canonical;
+}
+
+// There is deliberately no localhost exception here. Anything that relaxes the
+// host or the protocol has to be injected by a caller, so production cannot
+// reach it: the project install runs the customer's real project and therefore
+// runs lifecycle scripts, which makes an attacker-controlled registry code
+// execution.
+function requireRegistryUrl(value, label, { allowedHosts = ALLOWED_REGISTRY_HOSTS, allowInsecure = false } = {}) {
   const raw = requireLine(value, label, { maxLength: 2048 });
   let url;
   try {
@@ -58,8 +73,7 @@ function requireRegistryUrl(value, label, { allowedHosts = ALLOWED_REGISTRY_HOST
   } catch {
     throw new Error(`Control plane returned an invalid ${label}.`);
   }
-  const local = url.hostname === '127.0.0.1' || url.hostname === 'localhost';
-  if (url.protocol !== 'https:' && !local) {
+  if (url.protocol !== 'https:' && !allowInsecure) {
     throw new Error(`Control plane returned a non-HTTPS ${label}.`);
   }
   // Credentials in the URL would end up in whatever file we write it to, which
@@ -67,10 +81,10 @@ function requireRegistryUrl(value, label, { allowedHosts = ALLOWED_REGISTRY_HOST
   if (url.username || url.password) {
     throw new Error(`Control plane returned a ${label} containing credentials.`);
   }
-  if (!local && !allowedHosts.has(url.hostname)) {
+  if (!allowedHosts.has(url.hostname)) {
     throw new Error(`Control plane returned a ${label} on an unexpected host.`);
   }
-  return url;
+  return canonicalRegistryUrl(url);
 }
 
 // npm identifies a registry auth entry by the registry URL with the protocol
@@ -112,7 +126,7 @@ function validateNpmrcTemplate(template, { scope, registryUrl }) {
       } catch {
         throw new Error('Control plane returned an npmrc template with an invalid registry URL.');
       }
-      if (url.href !== registryUrl.href) {
+      if (canonicalRegistryUrl(url).href !== registryUrl.href) {
         throw new Error('Control plane returned an npmrc template pointing at a different registry.');
       }
       continue;
@@ -120,7 +134,9 @@ function validateNpmrcTemplate(template, { scope, registryUrl }) {
 
     if (line.includes(':_authToken=')) {
       authLines += 1;
-      if (line !== expectedAuth) {
+      // Accept the form the control plane happens to send; what we write is
+      // canonical either way.
+      if (line !== expectedAuth && line !== expectedAuth.replace('/:_authToken=', ':_authToken=')) {
         throw new Error('Control plane returned an npmrc template authenticating a different host.');
       }
       continue;
@@ -141,7 +157,7 @@ function validateNpmrcTemplate(template, { scope, registryUrl }) {
   return template;
 }
 
-export function validateClaim(value, { allowedHosts } = {}) {
+export function validateClaim(value, { allowedHosts, allowInsecure } = {}) {
   if (!isRecord(value) || !isRecord(value.package_registry)) {
     throw new Error('Control plane returned an invalid onboarding claim.');
   }
@@ -158,7 +174,7 @@ export function validateClaim(value, { allowedHosts } = {}) {
     throw new Error('Control plane returned an invalid package scope.');
   }
 
-  const registryUrl = requireRegistryUrl(registry.npm_registry_url, 'registry URL', { allowedHosts });
+  const registryUrl = requireRegistryUrl(registry.npm_registry_url, 'registry URL', { allowedHosts, allowInsecure });
   validateNpmrcTemplate(registry.npmrc_template, { scope, registryUrl });
 
   return {

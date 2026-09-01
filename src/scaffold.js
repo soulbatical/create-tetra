@@ -1,7 +1,7 @@
 import { execFile } from 'node:child_process';
-import { chmod, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, readFile, readdir, realpath, rename, rm, writeFile } from 'node:fs/promises';
 import { homedir, tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, relative } from 'node:path';
 import { promisify } from 'node:util';
 
 const run = promisify(execFile);
@@ -29,28 +29,81 @@ async function writeSecretFile(path, content, { write: writeImpl = writeFile, re
   await writeImpl(path, content, { mode: 0o600, flag: 'wx' });
 }
 
+// npm reads the userconfig the environment points at, which is not necessarily
+// the one in the home directory. Guessing gets it wrong for anyone who sets
+// NPM_CONFIG_USERCONFIG: we would write a token into a file npm never reads and
+// then report success.
+export async function resolveUserConfigPath({ exec = run, fallback = join(homedir(), '.npmrc') } = {}) {
+  try {
+    const { stdout } = await exec('npm', ['config', 'get', 'userconfig'], { env: process.env });
+    const path = String(stdout).trim();
+    return path === '' || path === 'undefined' ? fallback : path;
+  } catch {
+    return fallback;
+  }
+}
+
+// This is the one file create-tetra touches that it does not own. It may hold
+// the customer's npmjs login and every other registry they use, so it is
+// replaced atomically: a temp file in the same directory, then a rename. There
+// is no moment where the file does not exist, and a failed write leaves the
+// original untouched.
+async function replaceUserFile(path, content, { write: writeImpl = writeFile, move = rename, remove = rm } = {}) {
+  const temporary = `${path}.create-tetra-${process.pid}`;
+  try {
+    await remove(temporary, { force: true });
+    await writeImpl(temporary, content, { mode: 0o600, flag: 'wx' });
+    await move(temporary, path);
+  } finally {
+    await remove(temporary, { force: true });
+  }
+}
+
 // npm looks for credentials in the user-level npmrc, so that is where they go.
-// Only the one line for this registry is touched; everything else in the file is
-// preserved.
+// Only the entry for this registry is replaced; everything else is preserved.
 export async function storeRegistryCredential(
   { authKey, token },
-  { path = join(homedir(), '.npmrc'), read = readFile, write: writeImpl = writeFile, remove = rm } = {},
+  {
+    path,
+    read = readFile,
+    write: writeImpl = writeFile,
+    remove = rm,
+    move = rename,
+    resolveLink = realpath,
+    resolvePath = resolveUserConfigPath,
+  } = {},
 ) {
-  let current = '';
+  const configured = path ?? (await resolvePath());
+
+  // A symlinked npmrc usually points into a dotfiles repository. Replacing the
+  // link would silently detach the customer from their own config management,
+  // so write through to whatever it resolves to instead.
+  let target = configured;
   try {
-    current = await read(path, 'utf8');
+    target = await resolveLink(configured);
   } catch (error) {
     if (error.code !== 'ENOENT') throw error;
   }
 
+  let current = '';
+  try {
+    current = await read(target, 'utf8');
+  } catch (error) {
+    if (error.code !== 'ENOENT') throw error;
+  }
+
+  // npm accepts the key with or without a trailing slash and prefers the
+  // trailing-slash form when both exist, so a stale entry in the other form
+  // would outrank what we write. Remove both.
+  const stale = [authKey, authKey.replace(/\/$/, '')].map((key) => `${key}:_authToken=`);
   const kept = current
     .split('\n')
-    .filter((line) => !line.trim().startsWith(`${authKey}:_authToken=`));
+    .filter((line) => !stale.some((prefix) => line.trim().startsWith(prefix)));
   while (kept.length > 0 && kept.at(-1).trim() === '') kept.pop();
   kept.push(`${authKey}:_authToken=${token}`, '');
 
-  await writeSecretFile(path, kept.join('\n'), { write: writeImpl, remove });
-  return path;
+  await replaceUserFile(target, kept.join('\n'), { write: writeImpl, move, remove });
+  return target;
 }
 
 async function ensureEnvIsIgnored(projectPath, { read = readFile, write: writeImpl = writeFile } = {}) {
@@ -134,8 +187,15 @@ export async function installProject({
     write(`Registry-token opgeslagen in ${credentialPath}.\n`);
 
     // Prove the project can install before telling the customer that it can.
-    write('Dependencies installeren...\n');
-    await exec('npm', ['install'], { cwd: projectPath, env: process.env });
+    // Buffered output on the longest step is a trap: the default 1 MB cap makes
+    // a chatty install fail after it actually succeeded.
+    write('Dependencies installeren, dit duurt even...\n');
+    await exec('npm', ['install'], {
+      cwd: projectPath,
+      env: process.env,
+      maxBuffer: 64 * 1024 * 1024,
+      timeout: 15 * 60_000,
+    });
   } finally {
     await removeDirectory(toolDirectory, { recursive: true, force: true });
   }
@@ -143,13 +203,17 @@ export async function installProject({
   return { projectPath, projectName };
 }
 
-export function formatNextSteps({ projectPath, projectName }) {
+export function formatNextSteps({ projectPath, projectName }, { cwd = process.cwd() } = {}) {
+  // basename is only the right thing to cd into when the project is a direct
+  // child of where the customer stands, which `npx create-tetra` without an
+  // argument is not.
+  const step = relative(cwd, projectPath);
   return [
     '',
     `Klaar. ${projectName} staat in ${projectPath}.`,
     '',
     'Volgende stappen:',
-    `  cd ${projectName}`,
+    ...(step === '' ? [] : [`  cd ${step}`]),
     '  npm run dev',
     '',
     'Je registry-token staat in je gebruikers-npmrc, zodat npm install blijft werken.',
@@ -158,4 +222,4 @@ export function formatNextSteps({ projectPath, projectName }) {
   ].join('\n');
 }
 
-export { ensureEnvIsIgnored, writeSecretFile };
+export { ensureEnvIsIgnored, writeSecretFile, replaceUserFile };

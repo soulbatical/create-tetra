@@ -225,3 +225,42 @@ test('accepts every host we actually ship from', () => {
     assert.doesNotThrow(() => validateClaim(value), `expected ${host} to be accepted`);
   }
 });
+
+// The project install runs the customer's real project and therefore runs
+// lifecycle scripts. A registry a caller did not explicitly allow is code
+// execution, and localhost is not special in that respect.
+test('a local registry is refused unless a caller explicitly allows it', () => {
+  for (const url of ['http://localhost:4873/npm/', 'http://127.0.0.1:4873/npm/', 'https://localhost/npm/']) {
+    const value = payload();
+    value.package_registry.npm_registry_url = url;
+    value.package_registry.npmrc_template = [
+      `@soulbatical:registry=${url}`,
+      `//${new URL(url).host}/npm/:_authToken=\${NPM_TOKEN}`,
+    ].join('\n');
+    assert.throws(
+      () => validateClaim(value),
+      /non-HTTPS|unexpected host/,
+      `expected ${url} to be refused in production`,
+    );
+  }
+});
+
+// npm prefers the trailing-slash form when two entries exist for one registry,
+// so a stale entry of the customer's would outrank a slashless key we wrote.
+test('a registry without a trailing slash is canonicalised before anything is derived', () => {
+  const url = 'https://gitlab.com/api/v4/projects/85262758/packages/npm';
+  const value = payload();
+  value.package_registry.npm_registry_url = url;
+  value.package_registry.npmrc_template = [
+    `@soulbatical:registry=${url}`,
+    `//gitlab.com/api/v4/projects/85262758/packages/npm:_authToken=\${NPM_TOKEN}`,
+  ].join('\n');
+
+  const claim = validateClaim(value);
+  assert.equal(claim.registry.url, 'https://gitlab.com/api/v4/projects/85262758/packages/npm/');
+  assert.equal(claim.registry.authKey, '//gitlab.com/api/v4/projects/85262758/packages/npm/');
+
+  const { projectNpmrc, userNpmrcEntry } = renderProjectFiles(claim);
+  assert.match(projectNpmrc, /packages\/npm\/$/m);
+  assert.match(userNpmrcEntry, /packages\/npm\/:_authToken=/);
+});
