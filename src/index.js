@@ -1,4 +1,4 @@
-export { runCreateTetra, VERSION } from './cli.js';
+export { runCreateTetra, VERSION, isReservedRelease } from './cli.js';
 export { createControlPlaneClient } from './control-plane-client.js';
 export {
   formatInstallResult,

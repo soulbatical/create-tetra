@@ -42,6 +42,7 @@ test('runs browser approval and emits only the frozen secret-safe result', async
   const installed = await runCreateTetra({
     argv: ['horeca-crm'],
     cwd: '/tmp',
+    version: '0.1.0',
     client,
     browser: (url) => opened.push(url),
     write: (text) => { output += text; },
@@ -73,7 +74,7 @@ test('stops without installing when browser approval is denied', async () => {
     async install() { installCalls += 1; return result; },
   };
   await assert.rejects(
-    runCreateTetra({ client, browser: () => {}, write: () => {}, sleep: async () => {} }),
+    runCreateTetra({ version: '0.1.0', client, browser: () => {}, write: () => {}, sleep: async () => {} }),
     /browser geweigerd/,
   );
   assert.equal(installCalls, 0);

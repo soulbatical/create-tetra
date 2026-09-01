@@ -1,6 +1,6 @@
 {
   "name": "create-tetra",
-  "version": "0.1.0",
+  "version": "0.0.1-reserved.1",
   "description": "Public, interactive bootstrap for Tetra applications.",
   "type": "module",
   "bin": {

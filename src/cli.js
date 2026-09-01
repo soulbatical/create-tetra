@@ -16,6 +16,19 @@ De CLI opent een beveiligde browsergoedkeuring. Daar ziet en bevestigt de
 gebruiker organisatie, licentie en installatieactie voordat Tetra iets wijzigt.
 `;
 
+// A prerelease version is a reserved name claim, not a usable bootstrap. npm can
+// attach `latest` to the first version of a brand-new package regardless of the
+// publish dist-tag, so the artifact itself has to refuse to run.
+export function isReservedRelease(version) {
+  return version.includes('-');
+}
+
+const RESERVED_NOTICE = `create-tetra is nog niet beschikbaar.
+
+Deze versie is een gereserveerde naamclaim en installeert bewust niets.
+Volg https://github.com/soulbatical/create-tetra voor de eerste echte release.
+`;
+
 function parseArgs(argv, cwd) {
   if (argv.includes('--help') || argv.includes('-h')) return { help: true };
   if (argv.includes('--version') || argv.includes('-v')) return { version: true };
@@ -33,10 +46,12 @@ export async function runCreateTetra({
   write = (text) => process.stdout.write(text),
   sleep = (milliseconds) => new Promise((resolveSleep) => setTimeout(resolveSleep, milliseconds)),
   now = () => Date.now(),
+  version = VERSION,
 } = {}) {
   const parsed = parseArgs(argv, cwd);
   if (parsed.help) { write(HELP); return { kind: 'help' }; }
-  if (parsed.version) { write(`${VERSION}\n`); return { kind: 'version' }; }
+  if (parsed.version) { write(`${version}\n`); return { kind: 'version' }; }
+  if (isReservedRelease(version)) { write(RESERVED_NOTICE); return { kind: 'unavailable' }; }
 
   const projectName = basename(parsed.projectPath) || 'tetra-app';
   write(`Tetra bootstrap\nProject: ${projectName}\nActie: installeren\n\n`);
@@ -76,5 +91,6 @@ export async function runCreateTetra({
 
 export async function main() {
   const run = await runCreateTetra();
+  if (run.kind === 'unavailable') process.exitCode = 1;
   if (run.kind === 'installed' && run.outcome === 'failed') process.exitCode = 1;
 }

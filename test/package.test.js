@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -42,6 +42,11 @@ test('packed tarball starts in a clean shell without private registry config', (
     });
     assert.match(help, /npx create-tetra@latest/);
     assert.doesNotMatch(help, /--yes/);
+
+    const bin = join(target, 'node_modules', '.bin', 'create-tetra');
+    const reserved = spawnSync(bin, [], { encoding: 'utf8', env: { PATH: process.env.PATH } });
+    assert.equal(reserved.status, 1);
+    assert.match(reserved.stdout, /nog niet beschikbaar/);
   } finally {
     rmSync(target, { recursive: true, force: true });
   }

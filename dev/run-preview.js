@@ -90,6 +90,7 @@ await Promise.all([
 try {
   await runCreateTetra({
     argv: process.argv.slice(2),
+    version: '0.0.0',
     client: createControlPlaneClient({ baseUrl: apiOrigin, approvalOrigin: webOrigin }),
     browser: (url) => {
       process.stdout.write(`\nBrowserpreview: ${url}\n`);

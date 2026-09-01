@@ -72,3 +72,25 @@ test('the reported version follows package.json', () => {
   const pkg = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
   assert.equal(VERSION, pkg.version);
 });
+
+test('a reserved prerelease refuses to run and touches no control plane', async () => {
+  const { runCreateTetra, isReservedRelease } = await import('../src/cli.js');
+  assert.equal(isReservedRelease('0.0.1-reserved.1'), true);
+  assert.equal(isReservedRelease('0.1.0'), false);
+
+  let output = '';
+  const run = await runCreateTetra({
+    argv: [],
+    version: '0.0.1-reserved.1',
+    client: { requestAuthorization() { throw new Error('must not reach the control plane'); } },
+    browser: () => { throw new Error('must not open a browser'); },
+    write: (text) => { output += text; },
+  });
+  assert.equal(run.kind, 'unavailable');
+  assert.match(output, /nog niet beschikbaar/);
+});
+
+test('the published claim version is a prerelease', () => {
+  const pkg = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
+  assert.equal(VERSION, pkg.version);
+});
