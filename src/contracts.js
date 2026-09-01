@@ -30,9 +30,13 @@ function requireString(value, label) {
   return value;
 }
 
+// \p{Cc} covers C0 and C1 controls; \p{Cf} covers the invisible format characters
+// (bidi overrides, zero-width joiners) that let a server rewrite what a terminal shows.
+const UNPRINTABLE = /[\p{Cc}\p{Cf}]/u;
+
 function requireDisplayString(value, label) {
   const text = requireString(value, label);
-  if (text.length > 500 || /[\u0000-\u001f\u007f]/.test(text)) {
+  if (text.length > 500 || UNPRINTABLE.test(text)) {
     throw new Error(`Control plane returned an invalid ${label}.`);
   }
   return text;

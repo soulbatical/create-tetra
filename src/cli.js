@@ -20,7 +20,8 @@ gebruiker organisatie, licentie en installatieactie voordat Tetra iets wijzigt.
 // attach `latest` to the first version of a brand-new package regardless of the
 // publish dist-tag, so the artifact itself has to refuse to run.
 export function isReservedRelease(version) {
-  return version.includes('-');
+  const [core] = version.split('+', 1); // build metadata may contain '-' and is not a prerelease
+  return core.includes('-');
 }
 
 const RESERVED_NOTICE = `create-tetra is nog niet beschikbaar.
