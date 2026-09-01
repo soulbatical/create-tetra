@@ -1,9 +1,10 @@
+import { readFileSync } from 'node:fs';
 import { basename, resolve } from 'node:path';
 import { createControlPlaneClient } from './control-plane-client.js';
-import { formatInstallResult } from './contracts.js';
+import { formatInstallResult, summarizeInstallResult } from './contracts.js';
 import { openBrowser } from './open-browser.js';
 
-const VERSION = '0.1.0';
+export const VERSION = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version;
 const HELP = `create-tetra ${VERSION}
 
 Publieke, interactieve bootstrap voor een Tetra-app.
@@ -68,10 +69,12 @@ export async function runCreateTetra({
     targets: parsed.targets,
     verifyCleanCache: parsed.verifyCleanCache,
   });
-  write(formatInstallResult(result));
-  return { kind: 'installed', result };
+  const outcome = summarizeInstallResult(result);
+  write(formatInstallResult(result, outcome));
+  return { kind: 'installed', outcome, result };
 }
 
 export async function main() {
-  await runCreateTetra();
+  const run = await runCreateTetra();
+  if (run.kind === 'installed' && run.outcome === 'failed') process.exitCode = 1;
 }

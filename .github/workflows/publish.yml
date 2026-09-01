@@ -18,6 +18,8 @@ jobs:
           node-version: 24
           registry-url: https://registry.npmjs.org
       - run: npm test
-      - run: npm publish --access public --provenance
+      # A prerelease claims the name under `next`; only a full release moves `latest`.
+      - run: npm publish --access public --provenance --tag "$DIST_TAG"
         env:
+          DIST_TAG: ${{ github.event.release.prerelease && 'next' || 'latest' }}
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

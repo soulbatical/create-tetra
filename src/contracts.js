@@ -172,21 +172,41 @@ export function validateInstallResult(value) {
   };
 }
 
-export function formatInstallResult(result) {
-  const targetLines = result.configured_targets.map(({ target, status }) => `  - ${target}: ${status}`);
-  const cacheLines = result.clean_cache_checks.map(({ target, status }) => `  - ${target}: ${status}`);
+export function summarizeInstallResult(result) {
+  const statuses = result.configured_targets.map(({ status }) => status);
+  const blocked = statuses.includes('failed') || result.issues.some(({ recoverable }) => !recoverable);
+  if (blocked) return 'failed';
+  const applied = statuses.filter((status) => status === 'configured' || status === 'unchanged').length;
+  if (applied === 0) return 'planned';
+  return applied === statuses.length && result.issues.length === 0 ? 'completed' : 'partial';
+}
+
+const OUTCOME_HEADLINES = {
+  completed: 'Tetra-installatie afgerond.',
+  partial: 'Tetra-installatie gedeeltelijk afgerond; niet elk doel is geconfigureerd.',
+  planned: 'Tetra heeft de installatie voorbereid. Er is nog niets geinstalleerd.',
+  failed: 'Tetra-installatie mislukt. Er is niets bruikbaars opgeleverd.',
+};
+
+export function formatInstallResult(result, outcome = summarizeInstallResult(result)) {
+  const section = (title, lines) => (lines.length === 0 ? [] : [title, ...lines]);
   return [
     '',
-    'Tetra-installatie afgerond.',
+    OUTCOME_HEADLINES[outcome],
     `Package access: ${result.access_mode}`,
     `npm-configuratie: ${result.npmrc_mode}`,
     `Runtime-licentie: ${result.license_configured ? 'configured' : 'not configured'}`,
     'Doelen:',
-    ...targetLines,
-    'Lege-cachecontroles:',
-    ...cacheLines,
-    `Issues: ${result.issues.length}`,
-    `Volgende acties: ${result.next_actions.length}`,
+    ...result.configured_targets.map(({ target, status }) => `  - ${target}: ${status}`),
+    ...section('Lege-cachecontroles:', result.clean_cache_checks.map(({ target, status }) => `  - ${target}: ${status}`)),
+    ...section('Issues:', result.issues.map((issue) => {
+      const scope = issue.target ? `${issue.target}/` : '';
+      return `  - [${scope}${issue.code}] ${issue.summary}${issue.recoverable ? '' : ' (niet herstelbaar)'}`;
+    })),
+    ...section('Volgende acties:', result.next_actions.map((action) => {
+      const scope = action.target ? `${action.target}/` : '';
+      return `  - [${scope}${action.code}] ${action.description}`;
+    })),
     '',
   ].join('\n');
 }
