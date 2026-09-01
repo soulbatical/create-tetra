@@ -2,10 +2,8 @@ import { validateAuthorization, validateAuthorizationStatus, validateInstallResu
 
 const DEFAULT_BASE_URL = 'https://api.tetrasaas.com';
 
-function safeApiError(status, body) {
-  const rawCode = body && typeof body === 'object' && typeof body.code === 'string' ? body.code : '';
-  const code = /^[a-z0-9_]{1,64}$/.test(rawCode) ? ` (${rawCode})` : '';
-  return new Error(`Control plane request failed with HTTP ${status}${code}.`);
+function safeApiError(status) {
+  return new Error(`Control plane request failed with HTTP ${status}.`);
 }
 
 export function createControlPlaneClient({
@@ -33,7 +31,7 @@ export function createControlPlaneClient({
     } catch {
       // A malformed body is reported without echoing it; it may contain secrets.
     }
-    if (!response.ok) throw safeApiError(response.status, payload);
+    if (!response.ok) throw safeApiError(response.status);
     return payload;
   }
 

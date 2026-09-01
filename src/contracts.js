@@ -10,27 +10,63 @@ const RESULT_KEYS = [
   'issues',
   'next_actions',
 ];
+const AUTHORIZATION_KEYS = [
+  'authorization_id',
+  'device_code',
+  'expires_at',
+  'interval_seconds',
+  'user_code',
+  'verification_uri',
+];
 
 function isRecord(value) {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
 }
 
 function requireString(value, label) {
-  if (typeof value !== 'string' || value.length === 0) {
+  if (typeof value !== 'string' || value.length === 0 || value.length > 1024) {
     throw new Error(`Control plane returned an invalid ${label}.`);
   }
   return value;
 }
 
+function requireDisplayString(value, label) {
+  const text = requireString(value, label);
+  if (text.length > 500 || /[\u0000-\u001f\u007f]/.test(text)) {
+    throw new Error(`Control plane returned an invalid ${label}.`);
+  }
+  return text;
+}
+
+function requireCode(value, label) {
+  const code = requireString(value, label);
+  if (!/^[a-z0-9_]{1,64}$/.test(code)) throw new Error(`Control plane returned an invalid ${label}.`);
+  return code;
+}
+
+function requireExactKeys(value, expected, label) {
+  const actual = Object.keys(value).sort();
+  if (JSON.stringify(actual) !== JSON.stringify([...expected].sort())) {
+    throw new Error(`Control plane returned ${label} outside the frozen contract.`);
+  }
+}
+
+function requireTarget(value, label) {
+  if (!TARGETS.has(value)) throw new Error(`Control plane returned an invalid ${label}.`);
+  return value;
+}
+
 export function validateAuthorization(value, { approvalOrigin = 'https://app.tetrasaas.com' } = {}) {
   if (!isRecord(value)) throw new Error('Control plane returned an invalid authorization.');
+  requireExactKeys(value, AUTHORIZATION_KEYS, 'an authorization');
   const verificationUri = new URL(requireString(value.verification_uri, 'verification URI'));
   const isProductionApproval = approvalOrigin === 'https://app.tetrasaas.com';
   if ((isProductionApproval && verificationUri.protocol !== 'https:') || verificationUri.origin !== approvalOrigin) {
     throw new Error('Control plane returned an untrusted browser approval URL.');
   }
   const expiresAt = Date.parse(requireString(value.expires_at, 'authorization expiry'));
-  if (!Number.isFinite(expiresAt) || expiresAt <= Date.now()) {
+  const now = Date.now();
+  if (!Number.isFinite(expiresAt) || expiresAt <= now || expiresAt > now + 15 * 60_000) {
     throw new Error('Control plane returned an expired authorization.');
   }
   const intervalSeconds = Number(value.interval_seconds);
@@ -40,7 +76,13 @@ export function validateAuthorization(value, { approvalOrigin = 'https://app.tet
   return {
     authorizationId: requireString(value.authorization_id, 'authorization ID'),
     deviceCode: requireString(value.device_code, 'device code'),
-    userCode: requireString(value.user_code, 'user code'),
+    userCode: (() => {
+      const code = requireString(value.user_code, 'user code');
+      if (!/^[A-Z0-9]{4,12}(?:-[A-Z0-9]{4,12})?$/.test(code)) {
+        throw new Error('Control plane returned an invalid user code.');
+      }
+      return code;
+    })(),
     verificationUri: verificationUri.toString(),
     intervalSeconds,
     expiresAt,
@@ -49,10 +91,12 @@ export function validateAuthorization(value, { approvalOrigin = 'https://app.tet
 
 export function validateAuthorizationStatus(value) {
   if (!isRecord(value)) throw new Error('Control plane returned an invalid authorization status.');
-  if (value.status === 'pending') return { status: 'pending' };
-  if (value.status === 'denied') return { status: 'denied' };
-  if (value.status === 'expired') return { status: 'expired' };
+  if (['pending', 'denied', 'expired'].includes(value.status)) {
+    requireExactKeys(value, ['status'], 'an authorization status');
+    return { status: value.status };
+  }
   if (value.status !== 'approved') throw new Error('Control plane returned an unknown authorization status.');
+  requireExactKeys(value, ['status', 'install_grant'], 'an authorization status');
   return {
     status: 'approved',
     installGrant: requireString(value.install_grant, 'install grant'),
@@ -61,10 +105,7 @@ export function validateAuthorizationStatus(value) {
 
 export function validateInstallResult(value) {
   if (!isRecord(value)) throw new Error('Control plane returned an invalid install result.');
-  const keys = Object.keys(value).sort();
-  if (JSON.stringify(keys) !== JSON.stringify([...RESULT_KEYS].sort())) {
-    throw new Error('Control plane returned an install result outside the frozen contract.');
-  }
+  requireExactKeys(value, RESULT_KEYS, 'an install result');
   if (!['public', 'private'].includes(value.access_mode)) throw new Error('Invalid access mode.');
   if (!['public-engine-strict', 'private-env-placeholder'].includes(value.npmrc_mode)) {
     throw new Error('Invalid npmrc mode.');
@@ -73,20 +114,62 @@ export function validateInstallResult(value) {
   if (!Array.isArray(value.configured_targets) || !Array.isArray(value.clean_cache_checks)) {
     throw new Error('Invalid target results.');
   }
-  for (const item of value.configured_targets) {
-    if (!isRecord(item) || !TARGETS.has(item.target) || !TARGET_STATUSES.has(item.status)) {
+  const configuredTargets = value.configured_targets.map((item) => {
+    if (!isRecord(item)) throw new Error('Invalid configured target result.');
+    requireExactKeys(item, ['target', 'status'], 'a configured target result');
+    if (!TARGETS.has(item.target) || !TARGET_STATUSES.has(item.status)) {
       throw new Error('Invalid configured target result.');
     }
-  }
-  for (const item of value.clean_cache_checks) {
-    if (!isRecord(item) || !TARGETS.has(item.target) || !CHECK_STATUSES.has(item.status)) {
+    return { target: item.target, status: item.status };
+  });
+  const cleanCacheChecks = value.clean_cache_checks.map((item) => {
+    if (!isRecord(item)) throw new Error('Invalid clean-cache result.');
+    requireExactKeys(item, ['target', 'status'], 'a clean-cache result');
+    if (!TARGETS.has(item.target) || !CHECK_STATUSES.has(item.status)) {
       throw new Error('Invalid clean-cache result.');
     }
+    return { target: item.target, status: item.status };
+  });
+  if (new Set(configuredTargets.map(({ target }) => target)).size !== configuredTargets.length) {
+    throw new Error('Duplicate configured target result.');
+  }
+  if (new Set(cleanCacheChecks.map(({ target }) => target)).size !== cleanCacheChecks.length) {
+    throw new Error('Duplicate clean-cache result.');
   }
   if (!Array.isArray(value.issues) || !Array.isArray(value.next_actions)) {
     throw new Error('Invalid install guidance.');
   }
-  return value;
+  const issues = value.issues.map((item) => {
+    if (!isRecord(item)) throw new Error('Invalid install issue.');
+    const keys = item.target === undefined ? ['code', 'summary', 'recoverable'] : ['code', 'target', 'summary', 'recoverable'];
+    requireExactKeys(item, keys, 'an install issue');
+    if (typeof item.recoverable !== 'boolean') throw new Error('Invalid install issue.');
+    return {
+      code: requireCode(item.code, 'issue code'),
+      ...(item.target === undefined ? {} : { target: requireTarget(item.target, 'issue target') }),
+      summary: requireDisplayString(item.summary, 'issue summary'),
+      recoverable: item.recoverable,
+    };
+  });
+  const nextActions = value.next_actions.map((item) => {
+    if (!isRecord(item)) throw new Error('Invalid next action.');
+    const keys = item.target === undefined ? ['code', 'description'] : ['code', 'target', 'description'];
+    requireExactKeys(item, keys, 'a next action');
+    return {
+      code: requireCode(item.code, 'next-action code'),
+      ...(item.target === undefined ? {} : { target: requireTarget(item.target, 'next-action target') }),
+      description: requireDisplayString(item.description, 'next-action description'),
+    };
+  });
+  return {
+    access_mode: value.access_mode,
+    configured_targets: configuredTargets,
+    npmrc_mode: value.npmrc_mode,
+    license_configured: value.license_configured,
+    clean_cache_checks: cleanCacheChecks,
+    issues,
+    next_actions: nextActions,
+  };
 }
 
 export function formatInstallResult(result) {
