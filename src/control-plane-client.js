@@ -3,7 +3,11 @@ import { validateClaim } from './claim.js';
 
 // One host. The approval page and the API live on the same origin as the site,
 // so there is no separate api./app. subdomain to keep in sync.
-const DEFAULT_BASE_URL = 'https://www.tetrasaas.com';
+//
+// The apex, not www: www 301s to the apex, and requests here use
+// redirect: 'error' on purpose, so every call would throw before reaching a
+// handler. Measured, not assumed.
+const DEFAULT_BASE_URL = 'https://tetrasaas.com';
 
 function safeApiError(status) {
   return new Error(`Control plane request failed with HTTP ${status}.`);

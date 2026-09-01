@@ -7,10 +7,10 @@ const refuse = () => { throw new Error('spawned'); };
 
 test('only the allowlisted approval origin is opened', () => {
   for (const url of [
-    'http://www.tetrasaas.com/install/approve',
-    'https://www.tetrasaas.com.evil.example/install',
+    'http://tetrasaas.com/install/approve',
+    'https://tetrasaas.com.evil.example/install',
     'https://evil.example/install',
-    'https://tetrasaas.com/install/approve',
+    'https://www.tetrasaas.com/install/approve',
   ]) {
     assert.throws(
       () => openBrowser(url, { platform: 'darwin', spawnImpl: refuse }),
@@ -26,7 +26,7 @@ test('the url is passed as an argument, never through a shell', () => {
     calls.push({ command, args, options });
     return { unref() {} };
   };
-  const url = 'https://www.tetrasaas.com/install/approve?request=abc';
+  const url = 'https://tetrasaas.com/install/approve?request=abc';
 
   openBrowser(url, { platform: 'darwin', spawnImpl });
   openBrowser(url, { platform: 'win32', spawnImpl });
@@ -50,7 +50,7 @@ test('a missing browser opener does not take the process down', () => {
     unref() {},
   });
 
-  openBrowser('https://www.tetrasaas.com/install/approve', { platform: 'linux', spawnImpl });
+  openBrowser('https://tetrasaas.com/install/approve', { platform: 'linux', spawnImpl });
 
   const errorListener = listeners.find(({ event }) => event === 'error');
   assert.ok(errorListener, 'the child must have an error listener');

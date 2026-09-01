@@ -28,7 +28,7 @@ function stubClient({ pollStatuses = [{ status: 'approved', installGrant: 'grant
         authorizationId: 'auth-id',
         deviceCode: SECRETS[0],
         userCode: 'ABCD-EFGH',
-        verificationUri: 'https://www.tetrasaas.com/install/approve?request=public-id',
+        verificationUri: 'https://tetrasaas.com/install/approve?request=public-id',
         intervalSeconds: 1,
         expiresAt: Date.now() + 60_000,
       };
@@ -139,7 +139,7 @@ test('the browser is only opened for the approval URL the control plane gave', a
     install: async (o) => ({ projectPath: o.projectPath, projectName: o.projectName }),
   });
 
-  assert.deepEqual(opened, ['https://www.tetrasaas.com/install/approve?request=public-id']);
+  assert.deepEqual(opened, ['https://tetrasaas.com/install/approve?request=public-id']);
 });
 
 test('a reserved prerelease still refuses before touching anything', async () => {

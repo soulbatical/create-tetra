@@ -4,7 +4,7 @@ import test from 'node:test';
 import { isReservedRelease } from '../src/cli.js';
 import { validateAuthorization, validateAuthorizationStatus } from '../src/contracts.js';
 
-const ORIGIN = 'https://www.tetrasaas.com';
+const ORIGIN = 'https://tetrasaas.com';
 
 const authorization = (overrides = {}) => ({
   authorization_id: 'auth-id',
@@ -25,9 +25,9 @@ test('accepts an authorization on the approval origin', () => {
 test('refuses an approval URL outside the allowlisted origin', () => {
   for (const uri of [
     'https://lookalike.example/install',
-    'https://www.tetrasaas.com.evil.example/install',
-    'http://www.tetrasaas.com/install',
-    'https://tetrasaas.com/install',
+    'https://tetrasaas.com.evil.example/install',
+    'http://tetrasaas.com/install',
+    'https://www.tetrasaas.com/install',
   ]) {
     assert.throws(
       () => validateAuthorization(authorization({ verification_uri: uri }), { approvalOrigin: ORIGIN }),

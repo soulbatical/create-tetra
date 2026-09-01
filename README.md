@@ -15,7 +15,7 @@ Doppler.
 
 ## Wat er gebeurt
 
-1. De CLI vraagt een goedkeuring aan en opent `https://www.tetrasaas.com`.
+1. De CLI vraagt een goedkeuring aan en opent `https://tetrasaas.com`.
 2. Daar zie je welke organisatie, licentie en welk project het betreft, plus een
    bevestigingscode die je met je terminal vergelijkt. Je keurt goed of weigert.
 3. Na goedkeuring haalt de CLI eenmalig jouw eigen toegang op: een read-only
@@ -56,7 +56,7 @@ installeerbaar is voordat je iets te horen krijgt.
 
 - Vóór jouw goedkeuring haalt deze package niets privés op en leest hij geen
   registryconfiguratie. Hij heeft geen dependencies.
-- De browser wordt alleen geopend voor `https://www.tetrasaas.com`; een andere
+- De browser wordt alleen geopend voor `https://tetrasaas.com`; een andere
   origin wordt geweigerd.
 - De registry moet HTTPS zijn, mag geen inloggegevens in de URL dragen, en moet
   op een van de hosts staan waar Tetra daadwerkelijk vandaan gepubliceerd wordt.

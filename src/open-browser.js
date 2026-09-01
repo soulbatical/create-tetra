@@ -1,6 +1,6 @@
 import { spawn } from 'node:child_process';
 
-const APPROVAL_ORIGIN = 'https://www.tetrasaas.com';
+const APPROVAL_ORIGIN = 'https://tetrasaas.com';
 
 export function openBrowser(url, { platform = process.platform, spawnImpl = spawn, origin = APPROVAL_ORIGIN } = {}) {
   const parsed = new URL(url);
