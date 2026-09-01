@@ -1,7 +1,7 @@
 import { execFile } from 'node:child_process';
 import { chmod, lstat, mkdir, mkdtemp, readFile, readdir, readlink, rename, rm, writeFile } from 'node:fs/promises';
 import { homedir, tmpdir } from 'node:os';
-import { dirname, isAbsolute, join, relative } from 'node:path';
+import { dirname, isAbsolute, join, relative, resolve as resolvePathname, sep } from 'node:path';
 import { promisify } from 'node:util';
 
 const run = promisify(execFile);
@@ -30,19 +30,32 @@ async function writeSecretFile(path, content, { write: writeImpl = writeFile, re
 }
 
 // npm reads the userconfig the environment points at rather than the one in the
-// home directory, so an explicit NPM_CONFIG_USERCONFIG has to be honoured.
+// home directory, so a customer's own NPM_CONFIG_USERCONFIG has to be honoured.
 //
-// Deliberately not via `npm config get userconfig`: that resolution is
-// cwd-sensitive and honours `userconfig=` from a project .npmrc, which would let
-// whatever repository the customer happens to stand in decide where their
-// personal registry token gets written. Reading the environment cannot be
-// steered that way. A relative value is ignored for the same reason — it would
-// only have meaning relative to a directory we do not control.
-export function resolveUserConfigPath({ env = process.env, fallback = join(homedir(), '.npmrc') } = {}) {
-  const configured = (env.npm_config_userconfig ?? env.NPM_CONFIG_USERCONFIG ?? '').trim();
+// Only the uppercase form. npx injects `npm_config_userconfig` itself, already
+// resolved and already absolute, and that resolution honours `userconfig=` from
+// a project .npmrc — so on POSIX the lowercase variable is npm's own answer to a
+// question the working directory got to influence, not the customer's intent.
+// Reading it would let any repository someone happens to stand in decide where
+// their personal registry token is written.
+//
+// Windows environment lookups are case-insensitive, so there the two cannot be
+// told apart. The containment check below is what covers that: a userconfig
+// inside the current working directory is never a real user-level config, and is
+// exactly what a hostile repository would point at.
+export function resolveUserConfigPath({
+  env = process.env,
+  fallback = join(homedir(), '.npmrc'),
+  cwd = process.cwd(),
+} = {}) {
+  const configured = (env.NPM_CONFIG_USERCONFIG ?? '').trim();
   if (configured === '') return fallback;
-  if (configured.startsWith('~/')) return join(homedir(), configured.slice(2));
-  return isAbsolute(configured) ? configured : fallback;
+
+  const expanded = configured.startsWith('~/') ? join(homedir(), configured.slice(2)) : configured;
+  if (!isAbsolute(expanded)) return fallback;
+
+  const inCwd = resolvePathname(expanded).startsWith(`${resolvePathname(cwd)}${sep}`);
+  return inCwd ? fallback : expanded;
 }
 
 // This is the one file create-tetra touches that it does not own. It may hold
@@ -50,7 +63,16 @@ export function resolveUserConfigPath({ env = process.env, fallback = join(homed
 // replaced atomically: a temp file in the same directory, then a rename. There
 // is no moment where the file does not exist, and a failed write leaves the
 // original untouched.
-async function replaceUserFile(path, content, { write: writeImpl = writeFile, move = rename, remove = rm } = {}) {
+async function replaceUserFile(
+  path,
+  content,
+  { write: writeImpl = writeFile, move = rename, remove = rm, makeDirectory = mkdir } = {},
+) {
+  // A dangling symlink usually means the dotfiles repository has not been cloned
+  // yet, so the directory it points into does not exist either. Failing here
+  // with a raw ENOENT would strand the customer after the grant is already spent.
+  await makeDirectory(dirname(path), { recursive: true });
+
   const temporary = `${path}.create-tetra-${process.pid}`;
   try {
     await remove(temporary, { force: true });
@@ -83,11 +105,15 @@ export async function storeRegistryCredential(
   // so write through to whatever it points at. lstat rather than realpath,
   // because a dangling link — dotfiles not checked out yet — must be followed
   // too instead of being quietly turned into a regular file.
+  // readlink resolves one level, so a chain (top -> mid -> real) would leave the
+  // middle link replaced by a regular file and the real content out of the
+  // effective config. Walk to the end, with a cap so a loop cannot hang us.
   let target = configured;
-  const link = await describeLink(configured);
-  if (link?.isSymbolicLink()) {
-    const destination = await readLinkImpl(configured);
-    target = isAbsolute(destination) ? destination : join(dirname(configured), destination);
+  for (let hop = 0; hop < 32; hop += 1) {
+    const link = await describeLink(target);
+    if (!link?.isSymbolicLink()) break;
+    const destination = await readLinkImpl(target);
+    target = isAbsolute(destination) ? destination : join(dirname(target), destination);
   }
 
   let current = '';

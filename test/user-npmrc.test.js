@@ -131,14 +131,54 @@ test('a missing npmrc is created with just our entry', async () => {
 // Deliberately not via `npm config get userconfig`: that resolution honours a
 // project .npmrc, which would let whatever repository the customer stands in
 // decide where their personal registry token is written.
-test('the userconfig path comes from the environment, never from the working directory', () => {
+test('an explicit userconfig from the customer is honoured', () => {
   assert.equal(
-    resolveUserConfigPath({ env: { NPM_CONFIG_USERCONFIG: '/elsewhere/custom-npmrc' }, fallback: '/home/c/.npmrc' }),
+    resolveUserConfigPath({
+      env: { NPM_CONFIG_USERCONFIG: '/elsewhere/custom-npmrc' },
+      fallback: '/home/c/.npmrc',
+      cwd: '/work',
+    }),
     '/elsewhere/custom-npmrc',
   );
+});
+
+// npx injects npm_config_userconfig itself, already absolute, using a resolution
+// that honours `userconfig=` from a project .npmrc. Reading the lowercase form
+// would hand the placement of a personal token to whatever repo the customer
+// happens to stand in.
+test('the lowercase variable npx injects is ignored', () => {
   assert.equal(
-    resolveUserConfigPath({ env: { npm_config_userconfig: '/lower/custom-npmrc' }, fallback: '/home/c/.npmrc' }),
-    '/lower/custom-npmrc',
+    resolveUserConfigPath({
+      env: { npm_config_userconfig: '/work/hostile-repo/collected.npmrc' },
+      fallback: '/home/c/.npmrc',
+      cwd: '/work/hostile-repo',
+    }),
+    '/home/c/.npmrc',
+  );
+});
+
+// Windows environment lookups are case-insensitive, so the two variables cannot
+// be told apart there. A userconfig inside the working directory is never a real
+// user-level config, which is what makes containment the right guard.
+test('a userconfig inside the working directory is refused', () => {
+  for (const [configured, cwd] of [
+    ['/work/repo/collected.npmrc', '/work/repo'],
+    ['/work/repo/nested/deep.npmrc', '/work/repo'],
+  ]) {
+    assert.equal(
+      resolveUserConfigPath({ env: { NPM_CONFIG_USERCONFIG: configured }, fallback: '/home/c/.npmrc', cwd }),
+      '/home/c/.npmrc',
+      `expected ${configured} to be refused from ${cwd}`,
+    );
+  }
+  assert.equal(
+    resolveUserConfigPath({
+      env: { NPM_CONFIG_USERCONFIG: '/work/repo-sibling/.npmrc' },
+      fallback: '/home/c/.npmrc',
+      cwd: '/work/repo',
+    }),
+    '/work/repo-sibling/.npmrc',
+    'a sibling directory is not containment',
   );
 });
 
@@ -151,7 +191,7 @@ test('a relative or empty userconfig falls back instead of following the working
     { NPM_CONFIG_USERCONFIG: '../sneaky.npmrc' },
   ]) {
     assert.equal(
-      resolveUserConfigPath({ env, fallback: '/home/customer/.npmrc' }),
+      resolveUserConfigPath({ env, fallback: '/home/customer/.npmrc', cwd: '/work' }),
       '/home/customer/.npmrc',
       `expected ${JSON.stringify(env)} to fall back`,
     );
@@ -169,7 +209,9 @@ test('a project .npmrc cannot redirect the token', async () => {
     process.chdir(dir);
     const home = join(dir, 'home-npmrc');
     const written = await storeRegistryCredential(files, {
-      resolvePath: () => resolveUserConfigPath({ env: {}, fallback: home }),
+      // The real environment, so an injected npm_config_userconfig would show up
+      // here rather than being defined away by a hand-built object.
+      resolvePath: () => resolveUserConfigPath({ fallback: home, cwd: dir }),
     });
 
     assert.equal(written, home);
@@ -194,6 +236,49 @@ test('a dangling symlink is followed, not replaced by a regular file', async () 
     assert.equal((await lstat(link)).isSymbolicLink(), true, 'the symlink must survive');
     assert.equal(written, missing);
     assert.match(await readFile(missing, 'utf8'), /new-token/);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+// readlink resolves one level. A chain would leave the middle link replaced by a
+// regular file and the real content out of the effective config.
+test('a chain of symlinks is followed to the end', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'create-tetra-npmrc-'));
+  const real = join(dir, 'real-npmrc');
+  const mid = join(dir, 'mid-npmrc');
+  const top = join(dir, '.npmrc');
+  await writeFile(real, '//other.example/:_authToken=keep-me\n');
+  await symlink(real, mid);
+  await symlink(mid, top);
+
+  try {
+    const written = await storeRegistryCredential(files, { path: top });
+
+    assert.equal(written, real, 'the end of the chain is what gets written');
+    assert.equal((await lstat(top)).isSymbolicLink(), true);
+    assert.equal((await lstat(mid)).isSymbolicLink(), true, 'the middle link must survive too');
+    const content = await readFile(real, 'utf8');
+    assert.match(content, /keep-me/);
+    assert.match(content, /new-token/);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+// "Dotfiles not checked out yet" usually means the whole directory is missing,
+// and a raw ENOENT here strands the customer after the grant is already spent.
+test('a symlink into a directory that does not exist yet still works', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'create-tetra-npmrc-'));
+  const missing = join(dir, 'dotfiles', 'not', 'cloned', '.npmrc');
+  const link = join(dir, '.npmrc');
+  await symlink(missing, link);
+
+  try {
+    const written = await storeRegistryCredential(files, { path: link });
+    assert.equal(written, missing);
+    assert.match(await readFile(missing, 'utf8'), /new-token/);
+    assert.equal((await lstat(link)).isSymbolicLink(), true);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

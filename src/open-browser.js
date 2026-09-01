@@ -16,5 +16,10 @@ export function openBrowser(url, { platform = process.platform, spawnImpl = spaw
     ? ['url.dll,FileProtocolHandler', parsed.toString()]
     : [parsed.toString()];
   const child = spawnImpl(command, args, { detached: true, stdio: 'ignore', shell: false });
-  child.unref();
+  // No opener exists on a headless Linux box, WSL without xdg-utils, or a bare
+  // container. Without a listener that spawn failure is an uncaught exception
+  // that kills the process — and the URL and the confirmation code have already
+  // been printed, so the customer can simply open it himself.
+  child.on?.('error', () => {});
+  child.unref?.();
 }

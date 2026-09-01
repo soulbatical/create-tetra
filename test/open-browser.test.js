@@ -39,3 +39,20 @@ test('the url is passed as an argument, never through a shell', () => {
     assert.ok(call.args.includes(url));
   }
 });
+
+// A headless Linux box, WSL without xdg-utils or a bare container has no opener.
+// Without an error listener that spawn failure is an uncaught exception, and it
+// would kill the CLI right after printing the URL the customer still needs.
+test('a missing browser opener does not take the process down', () => {
+  const listeners = [];
+  const spawnImpl = () => ({
+    on(event, handler) { listeners.push({ event, handler }); },
+    unref() {},
+  });
+
+  openBrowser('https://www.tetrasaas.com/install/approve', { platform: 'linux', spawnImpl });
+
+  const errorListener = listeners.find(({ event }) => event === 'error');
+  assert.ok(errorListener, 'the child must have an error listener');
+  assert.doesNotThrow(() => errorListener.handler(Object.assign(new Error('spawn ENOENT'), { code: 'ENOENT' })));
+});
