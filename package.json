@@ -1,0 +1,47 @@
+{
+  "name": "create-tetra",
+  "version": "0.1.0",
+  "description": "Public, interactive bootstrap for Tetra applications.",
+  "type": "module",
+  "bin": {
+    "create-tetra": "./bin/create-tetra.js"
+  },
+  "exports": {
+    ".": "./src/index.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "bin/",
+    "src/",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "preview": "node ./dev/run-preview.js",
+    "test": "node --test 'test/*.test.js'",
+    "pack:check": "npm pack --dry-run --json"
+  },
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org",
+    "provenance": true
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/soulbatical/create-tetra.git"
+  },
+  "homepage": "https://github.com/soulbatical/create-tetra#readme",
+  "bugs": {
+    "url": "https://github.com/soulbatical/create-tetra/issues"
+  },
+  "keywords": [
+    "tetra",
+    "saas",
+    "scaffold",
+    "create-app"
+  ],
+  "license": "MIT"
+}
