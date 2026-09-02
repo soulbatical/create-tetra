@@ -330,6 +330,9 @@ test('the recovery command points back at the path the customer asked for', asyn
     ['/projects/my-app', '/projects', 'npx create-tetra my-app'],
     ['/projects/apps/my-app', '/projects', 'npx create-tetra apps/my-app'],
     ['/projects/my-app', '/projects/my-app', 'npx create-tetra'],
+    // Unquoted this reads as two arguments, and parseArgs answers "Geef maximaal
+    // een project-map op." -- so the recovery advice would fail on its own.
+    ['/projects/my dir/app', '/projects', 'npx create-tetra "my dir/app"'],
   ]) {
     const h = harness();
     let output = '';
@@ -417,6 +420,25 @@ test('npm config inherited from npx cannot steer either install', async () => {
 
 // A userconfig we refuse to use changes where npm looks for the token, so the
 // customer has to be told; otherwise the install fails with a bare 401 later.
+// The in-cwd rule is a security check, so it has to run against the directory
+// installProject was actually given rather than whatever process.cwd() happens
+// to be. Calling resolveConfig() bare makes the cwd parameter decorative.
+test('the userconfig check runs against the working directory it was given', async () => {
+  const h = harness();
+  const seen = [];
+  await installProject({
+    ...h.options,
+    cwd: '/home/customer/projects',
+    resolveUserConfig: (options) => {
+      seen.push(options);
+      return { path: '/home/customer/.npmrc', ignored: null };
+    },
+  });
+
+  assert.equal(seen.length, 1);
+  assert.equal(seen[0]?.cwd, '/home/customer/projects', 'the containment check must see the real cwd');
+});
+
 test('a userconfig we will not follow is reported instead of silently dropped', async () => {
   // Every reason resolveUserConfig can return needs a sentence behind it. A new
   // reason with no text renders as "undefined", which is worse than silence.

@@ -166,6 +166,29 @@ test('the browser opener gets the same output channel as the rest of the run', a
   assert.match(output, /opener said something/);
 });
 
+// installProject uses cwd for the in-cwd containment check and for the recovery
+// command it prints. Both are wrong if the CLI does not pass its own.
+test('the working directory reaches the installer instead of being rediscovered', async () => {
+  let received;
+  await runCreateTetra({
+    argv: ['apps/my-app'],
+    cwd: '/home/customer/projects',
+    version: '1.0.0',
+    client: stubClient(),
+    checkDirectory: async () => true,
+    browser: () => {},
+    write: () => {},
+    sleep: async () => {},
+    install: async (options) => {
+      received = options;
+      return { projectPath: options.projectPath, projectName: options.projectName };
+    },
+  });
+
+  assert.equal(received?.cwd, '/home/customer/projects');
+  assert.equal(received?.projectPath, '/home/customer/projects/apps/my-app');
+});
+
 test('a reserved prerelease still refuses before touching anything', async () => {
   let output = '';
   const client = stubClient();

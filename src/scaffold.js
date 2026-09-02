@@ -283,12 +283,15 @@ export async function installProject({
   // Resolved once, up front: it decides both where the credential is written and
   // which file the project install is pointed at. Those two must be the same
   // file, or we store a token npm never reads.
-  const userConfig = resolveConfig();
+  const userConfig = resolveConfig({ cwd });
   if (userConfig.ignored) write(userConfigNotice(userConfig.ignored, userConfig.path));
 
   // The basename is only what the customer typed when the project is a direct
   // child of where he stands, so `apps/my-app` would come back as `my-app`.
-  const retry = ['npx create-tetra', relative(cwd, projectPath)].join(' ').trim();
+  // Quoted when it has to be: unquoted, `my dir/app` reaches parseArgs as two
+  // arguments and the advice fails with "Geef maximaal een project-map op."
+  const target = relative(cwd, projectPath);
+  const retry = ['npx create-tetra', /\s/.test(target) ? `"${target}"` : target].join(' ').trim();
 
   try {
     await writeSecretFile(
