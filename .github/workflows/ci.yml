@@ -16,9 +16,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      # No registry-url: nothing here talks to a registry, and given one
+      # setup-node writes an .npmrc with an _authToken placeholder plus an
+      # `Unknown user config "always-auth"` warning on every run. Same reason it
+      # is absent in publish.yml, where it actually mattered.
+      - uses: actions/setup-node@v7
         with:
           node-version: 24
-          registry-url: https://registry.npmjs.org
       - run: npm test
       - run: npm pack --dry-run
