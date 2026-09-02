@@ -222,6 +222,24 @@ const lastLine = (text) => {
   return lines.at(-1) ?? null;
 };
 
+// execFile puts the whole command line and all of the child's stderr into
+// error.message, so passing that on hands the customer a wall of text whose
+// first line is the useless `Command failed: npm install`. The line he needs —
+// ENOSPC, 401, ERESOLVE, ENOTFOUND — is the last one npm wrote.
+const commandReason = (error) => lastLine(error.stderr) ?? (error.message ?? 'onbekende fout').split('\n')[0];
+
+// Everything installProject does runs after the grant has been spent, so any
+// failure in here costs the customer his approval. Saying so is the difference
+// between "try again" and "why did nothing happen".
+const spentGrant = (what, reason, retry, leftBehind = null) => [
+  `${what}: ${reason}`,
+  '',
+  ...(leftBehind ? [`Wat er staat in ${leftBehind} is onvolledig; verwijder die map.`] : ['Er is nog niets geïnstalleerd.']),
+  'Je goedkeuring is wel verbruikt, dus je keurt opnieuw goed in de browser.',
+  '',
+  `Los het probleem hierboven op en draai dan: ${retry}`,
+].join('\n');
+
 export async function installProject({
   projectPath,
   projectName,
@@ -257,6 +275,10 @@ export async function installProject({
   const userConfig = resolveConfig();
   if (userConfig.ignored) write(userConfigNotice(userConfig.ignored, userConfig.path));
 
+  // The basename is only what the customer typed when the project is a direct
+  // child of where he stands, so `apps/my-app` would come back as `my-app`.
+  const retry = ['npx create-tetra', relative(cwd, projectPath)].join(' ').trim();
+
   try {
     await writeSecretFile(
       toolConfig,
@@ -267,21 +289,33 @@ export async function installProject({
     const environment = npmEnvironment(inherited, { NPM_CONFIG_USERCONFIG: toolConfig });
 
     write(`${SCAFFOLDER} ophalen uit jouw registry...\n`);
-    await exec(
-      'npm',
-      ['install', '--no-save', '--no-package-lock', '--ignore-scripts', '--prefix', toolDirectory, SCAFFOLDER],
-      { cwd: toolDirectory, env: environment },
-    );
+    try {
+      await exec(
+        'npm',
+        ['install', '--no-save', '--no-package-lock', '--ignore-scripts', '--prefix', toolDirectory, SCAFFOLDER],
+        { cwd: toolDirectory, env: environment },
+      );
+    } catch (error) {
+      // A broken npm cache, a full disk or a proxy in the way is the ordinary
+      // way this fails, and none of it is the customer's fault or his to guess.
+      throw new Error(spentGrant(`${SCAFFOLDER} ophalen uit jouw registry is mislukt`, commandReason(error), retry));
+    }
 
     write('Project genereren...\n');
     await makeDirectory(projectPath, { recursive: true, mode: 0o700 });
     // mkdir leaves the mode of an existing directory alone, and an existing
     // empty directory is a valid target.
     await setMode(projectPath, 0o700);
-    await exec(join(toolDirectory, 'node_modules', '.bin', SCAFFOLDER_BIN), [projectName, '--dir', projectPath], {
-      cwd: toolDirectory,
-      env: environment,
-    });
+    try {
+      await exec(join(toolDirectory, 'node_modules', '.bin', SCAFFOLDER_BIN), [projectName, '--dir', projectPath], {
+        cwd: toolDirectory,
+        env: environment,
+      });
+    } catch (error) {
+      // Same position, same raw failure — only by now the project directory
+      // exists and holds a half-written project, so it has to be named.
+      throw new Error(spentGrant('Het genereren van je project is mislukt', commandReason(error), retry, projectPath));
+    }
 
     // The scaffolder writes a maintainer-facing .npmrc pointing at the internal
     // registry. Ours has to land after it, deliberately.
@@ -321,10 +355,7 @@ export async function installProject({
         '@soulbatical-packages niet ophalen.',
         '',
         'Los het pad hierboven op, verwijder die projectmap of kies een andere naam,',
-        // The basename is only what the customer typed when the project is a
-        // direct child of where he stands, so `apps/my-app` would come back as
-        // `my-app` and put the retry somewhere else.
-        `en draai dan opnieuw: ${['npx create-tetra', relative(cwd, projectPath)].join(' ').trim()}`,
+        `en draai dan opnieuw: ${retry}`,
         '',
         'Je keurt dan opnieuw goed in de browser; deze goedkeuring is verbruikt.',
         '',
@@ -353,9 +384,7 @@ export async function installProject({
       // `killed` alone is the discriminator that holds on both platforms. And
       // `error.message` is the generic `Command failed: npm install`; the reason
       // the customer needs — 401, ERESOLVE, ENOTFOUND — is on stderr.
-      const reason = error.killed
-        ? 'het duurde langer dan 15 minuten'
-        : lastLine(error.stderr) ?? (error.message ?? 'onbekende fout').split('\n')[0];
+      const reason = error.killed ? 'het duurde langer dan 15 minuten' : commandReason(error);
       installed = false;
       write([
         '',

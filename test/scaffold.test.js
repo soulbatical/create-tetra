@@ -145,6 +145,69 @@ test('a non-empty target directory stops everything before any command runs', as
   assert.equal(h.writes.length, 0);
 });
 
+// Fetching the scaffolder sits past the point of no return just like the
+// dependency install does -- the grant is spent before installProject is even
+// called. A broken npm cache, a full disk or a proxy in the way is the ordinary
+// way this fails, and execFile puts the whole command line plus all of npm's
+// stderr into error.message, so the customer got that wall of text and no word
+// about his approval being gone.
+test('a failed scaffolder fetch is reported, not dumped', async () => {
+  const h = harness();
+  h.options.exec = async (command, args) => {
+    if (command === 'npm' && args.includes('@soulbatical/create-app')) {
+      throw Object.assign(
+        new Error([
+          'Command failed: npm install --no-save --no-package-lock --ignore-scripts --prefix /tmp/tool @soulbatical/create-app',
+          'npm error code ENOSPC',
+          'npm error nospc ENOSPC: no space left on device, write',
+        ].join('\n')),
+        { stderr: 'npm error code ENOSPC\nnpm error nospc ENOSPC: no space left on device, write\n', code: 1 },
+      );
+    }
+    return { stdout: '', stderr: '' };
+  };
+
+  await assert.rejects(installProject(h.options), (error) => {
+    // The reason npm actually gave, not the generic wrapper (N16).
+    assert.match(error.message, /no space left on device/, 'the real reason has to survive');
+    assert.equal(
+      error.message.includes('Command failed:'),
+      false,
+      'the echoed command line is noise the customer cannot act on',
+    );
+    assert.match(error.message, /goedkeuring/, 'he has to hear that the approval is spent');
+    assert.match(error.message, /npx create-tetra/, 'and how to start over');
+    assert.equal(/^\s+at /m.test(error.message), false, 'no stack frames');
+    return true;
+  });
+
+  assert.deepEqual(h.removedDirectories, ['/tmp/tool'], 'the helper directory is still cleaned up');
+});
+
+// The generate step is the same class one line down: same position, same raw
+// failure, only by then the project directory exists and has to be mentioned.
+test('a failed scaffolder run is reported, not dumped', async () => {
+  const h = harness();
+  h.options.exec = async (command) => {
+    if (command.includes('create-soulbatical-app')) {
+      throw Object.assign(new Error('Command failed: create-soulbatical-app'), {
+        stderr: 'Error: template registry unreachable\n',
+      });
+    }
+    return { stdout: '', stderr: '' };
+  };
+
+  await assert.rejects(installProject(h.options), (error) => {
+    assert.match(error.message, /template registry unreachable/);
+    assert.equal(error.message.includes('Command failed:'), false);
+    assert.match(error.message, /goedkeuring/);
+    assert.match(error.message, /\/projects\/my-app/, 'the directory that now exists has to be named');
+    return true;
+  });
+
+  assert.deepEqual(h.removedDirectories, ['/tmp/tool']);
+});
+
 test('the helper directory is cleaned up even when the scaffolder fails', async () => {
   const h = harness();
   h.options.exec = async (command) => {
