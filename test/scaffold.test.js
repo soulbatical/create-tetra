@@ -424,6 +424,7 @@ test('a userconfig we will not follow is reported instead of silently dropped', 
     ['./collected.npmrc', 'relative'],
     ['/work/repo/collected.npmrc', 'in-cwd'],
     ['/etc/npmrc', 'outside-home'],
+    ['C:\\Users\\c\\mine.npmrc', 'win32'],
   ]) {
     const h = harness();
     const said = [];

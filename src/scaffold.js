@@ -39,15 +39,21 @@ async function writeSecretFile(path, content, { write: writeImpl = writeFile, re
 // Reading it would let any repository someone happens to stand in decide where
 // their personal registry token is written.
 //
-// Windows environment lookups are case-insensitive, so there the two cannot be
-// told apart and the name alone protects nothing. Containment is what covers
-// that, and it takes both halves: a userconfig inside the current working
-// directory is never a real user-level config, and neither is one outside the
-// home directory. A hostile project .npmrc does not have to point inside itself
-// — `userconfig=../outside/collected.npmrc` resolves to an absolute path beside
-// the repository, which clears both isAbsolute and the in-cwd rule. Requiring
-// the path to live under the home directory is what closes that, because a
-// repository cannot move the customer's home.
+// Windows environment lookups are case-insensitive, so there npm's injection
+// arrives under this name too and nothing distinguishes it from the customer's
+// own setting. Containment does not rescue that. A hostile project .npmrc never
+// had to point inside the repository — `userconfig=../dotfiles/.npmrc` resolves
+// to an absolute path beside it — and a cloned repository normally sits under
+// the home directory, so the target clears isAbsolute, the in-cwd rule and the
+// home boundary all at once. Worse than a path: storeRegistryCredential keeps
+// whatever the file already held, so the repository would get to choose which
+// existing file the token is appended to, invisibly.
+//
+// So on win32 the environment is not read at all and the home-directory npmrc is
+// used instead. That costs the Windows customer who genuinely set the variable,
+// which is why it is reported rather than done quietly. On POSIX the uppercase
+// name can only be his own doing, so it is still honoured, and the containment
+// rules below stay as the second line under it.
 //
 // Refusing a setting silently is its own trap: npm then reads a different file
 // than the customer configured, and the install fails later with a bare 401. So
@@ -62,9 +68,13 @@ export function resolveUserConfig({
   const configured = (env.NPM_CONFIG_USERCONFIG ?? '').trim();
   if (configured === '') return { path: fallback, ignored: null };
 
-  // npm's own parseField expands `~\` as well as `~/` on win32.
-  const tilde = platform === 'win32' ? /^~[/\\]/ : /^~\//;
-  const expanded = tilde.test(configured) ? join(home, configured.slice(2)) : configured;
+  // Nothing below can tell npm's echo from the customer's intent on win32, so
+  // there is nothing here worth inspecting on that platform.
+  if (platform === 'win32') return { path: fallback, ignored: { value: configured, reason: 'win32' } };
+
+  // npm's parseField also expands `~\` on win32, but a win32 value never reaches
+  // this line, so `~/` is the only form that can arrive here.
+  const expanded = /^~\//.test(configured) ? join(home, configured.slice(2)) : configured;
 
   // npm resolves a relative path against its cwd, which is the directory we
   // deliberately do not let decide this. Fall back rather than follow.
@@ -94,6 +104,7 @@ const USER_CONFIG_REASONS = {
   relative: 'dat pad is relatief en zou van je huidige map afhangen',
   'in-cwd': 'dat pad ligt in je huidige map en is dus geen persoonlijke configuratie',
   'outside-home': 'dat pad ligt buiten je home-map en is dus geen persoonlijke configuratie',
+  win32: 'op Windows is die waarde niet te onderscheiden van de waarde die npx zelf zet',
 };
 
 const userConfigNotice = ({ value, reason }, path) =>

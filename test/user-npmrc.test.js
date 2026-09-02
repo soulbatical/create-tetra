@@ -180,6 +180,64 @@ test('the lowercase variable is ignored even where no containment rule would cat
   assert.equal(resolved.ignored, null, 'a variable we never read is not a setting we refuse');
 });
 
+// On win32 process.env lookups are case-insensitive, so npm's own injected
+// npm_config_userconfig arrives under the uppercase name too and there is no way
+// left to tell it apart from the customer's own setting. No containment rule
+// closes that: the hostile repository is normally cloned under the home
+// directory, so it can point at an absolute path that is outside cwd and inside
+// home and clear every guard at once. The only boundary that holds on that
+// platform is not reading the environment there at all.
+test('on win32 the environment is not read, because npm-s injection cannot be told apart', () => {
+  // The same fixture as the POSIX test above, through the uppercase door.
+  const resolved = resolveUserConfig({
+    env: { NPM_CONFIG_USERCONFIG: '/home/c/.config/attacker/collected.npmrc' },
+    home: '/home/c',
+    fallback: '/home/c/.npmrc',
+    cwd: '/home/c/projects/hostile-repo',
+    platform: 'win32',
+  });
+
+  assert.equal(resolved.path, '/home/c/.npmrc', 'the token must not follow a repository-chosen path');
+  assert.deepEqual(
+    resolved.ignored,
+    { value: '/home/c/.config/attacker/collected.npmrc', reason: 'win32' },
+    'and the customer has to hear that his setting was dropped, and where the token went instead',
+  );
+});
+
+// The measured layout from the review: two checkouts side by side under the home
+// directory, `userconfig=../dotfiles/.npmrc` in the hostile one. Outside cwd,
+// inside home, absolute -- and storeRegistryCredential preserves existing content,
+// so on win32 the attacker also gets to choose which existing file the token is
+// appended to, leaving no visible trace.
+//
+// The same value on POSIX is the opposite case and must still be followed: npx
+// injects only the lowercase name there, so anything arriving under the uppercase
+// one can only be the customer's own doing. That asymmetry is the whole design,
+// so pin both halves.
+test('a repository cloned under home cannot aim the token at a neighbouring checkout', () => {
+  const settings = {
+    env: { NPM_CONFIG_USERCONFIG: '/home/c/projects/dotfiles/.npmrc' },
+    home: '/home/c',
+    fallback: '/home/c/.npmrc',
+    cwd: '/home/c/projects/hostile-repo',
+  };
+
+  assert.equal(
+    resolveUserConfigPath({ ...settings, platform: 'win32' }),
+    '/home/c/.npmrc',
+    'on win32 this may be npm echoing the repository back at us',
+  );
+
+  for (const platform of ['linux', 'darwin']) {
+    assert.equal(
+      resolveUserConfigPath({ ...settings, platform }),
+      '/home/c/projects/dotfiles/.npmrc',
+      `on ${platform} the uppercase name can only be the customer's own setting`,
+    );
+  }
+});
+
 // Windows environment lookups are case-insensitive, so the two variables cannot
 // be told apart there. A userconfig inside the working directory is never a real
 // user-level config, which is what makes containment the right guard.
@@ -469,8 +527,8 @@ test('a userconfig we refuse to follow says so, and says which one', () => {
   );
 });
 
-// npm's own parseField expands `~\\` on win32; only handling `~/` leaves a
-// Windows customer's setting silently dropped.
+// npm's parseField expands `~/`, and so do we, so a customer who writes his
+// setting that way is followed rather than silently dropped.
 test('a home-relative userconfig is expanded the way npm expands it', () => {
   assert.equal(
     resolveUserConfigPath({
@@ -482,14 +540,15 @@ test('a home-relative userconfig is expanded the way npm expands it', () => {
     '/home/customer/mine.npmrc',
   );
 
-  assert.equal(
-    resolveUserConfigPath({
-      env: { NPM_CONFIG_USERCONFIG: '~\\sub\\mine.npmrc' },
-      home: '/home/customer',
-      cwd: '/work',
-      platform: 'win32',
-    }),
-    join('/home/customer', 'sub\\mine.npmrc'),
-    'a backslash form is home-relative on Windows',
-  );
+  // npm expands `~\` too, but only on win32, and win32 values are refused
+  // before any expansion happens -- so the tilde form gets the same treatment
+  // there as every other value, rather than being expanded and then followed.
+  const onWindows = resolveUserConfig({
+    env: { NPM_CONFIG_USERCONFIG: '~\\sub\\mine.npmrc' },
+    home: '/home/customer',
+    cwd: '/work',
+    platform: 'win32',
+  });
+  assert.equal(onWindows.path, '/home/customer/.npmrc');
+  assert.equal(onWindows.ignored.reason, 'win32');
 });
