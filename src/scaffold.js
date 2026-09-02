@@ -280,21 +280,25 @@ const spentGrant = (what, reason, retry, leftBehind = null) => [
 // point NPM_CONFIG_USERCONFIG at it, and Netlify installs before it runs the
 // build command, so a file is the only thing early enough.
 //
-// create-tetra is its only producer. create-app used to ship one naming our own
-// registry — which the customer cannot reach — and that version is why the
-// replace below is a replace and not a plain write; an older scaffolder still
-// puts it there. Current versions ship no ci/ at all, hence the mkdir.
+// create-tetra is its only producer, and nothing else has ever been one: no
+// published create-app ships a ci/ directory, so the file does not exist until
+// we write it — hence the mkdir. It goes through replaceProjectFile for the
+// reason every file here does, symlink and mode safety, not because something
+// else put one there.
 //
 // It holds the ${NPM_TOKEN} placeholder rather than the token, which is exactly
 // why it is not a secret file and belongs in his repository. The mode says so.
 //
 // Not fatal, and that is a deliberate trade. By this point the grant is spent
 // and the project exists, so a directory we cannot write is no reason to throw
-// away a working local install. It does cost something now that nothing else
-// writes this file: npm accepts a NPM_CONFIG_USERCONFIG that does not exist
-// without a word, so a missing file surfaces as a bare 401 much later. The
-// deploy configs guard for that with an explicit `test -f ci/npmrc ||`, so the
-// failure is readable there; here we say what is missing and what to put in it.
+// away a working local install. What it costs differs per platform, because npm
+// accepts a NPM_CONFIG_USERCONFIG that does not exist without a word. Railway's
+// build commands open with `test -f ci/npmrc ||` and stop with a readable
+// message. Netlify has no such guard and cannot have one — it installs before
+// the build command runs, which is the very reason this has to be a file — so
+// there a missing file is a bare 401 much later, and the message below is the
+// only warning the customer gets. That is why it names the file and its two
+// lines rather than only reporting a failure.
 async function writeCiConfig({
   projectPath,
   content,
