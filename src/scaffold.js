@@ -276,20 +276,25 @@ const spentGrant = (what, reason, retry, leftBehind = null) => [
   `Los het probleem hierboven op en draai dan: ${retry}`,
 ].join('\n');
 
-// Same problem as the project .npmrc, one directory down. The scaffolder ships a
-// ci/npmrc naming the internal registry, and railway.toml and netlify.toml point
-// NPM_CONFIG_USERCONFIG at it — Netlify installs before it runs the build
-// command, so a file is the only thing early enough. Left as shipped, it
-// authenticates the customer's build machine against a registry he cannot reach:
-// his laptop installs fine and his first deploy dies on a 401.
+// The file a build machine authenticates with: railway.toml and netlify.toml
+// point NPM_CONFIG_USERCONFIG at it, and Netlify installs before it runs the
+// build command, so a file is the only thing early enough.
+//
+// create-tetra is its only producer. create-app used to ship one naming our own
+// registry — which the customer cannot reach — and that version is why the
+// replace below is a replace and not a plain write; an older scaffolder still
+// puts it there. Current versions ship no ci/ at all, hence the mkdir.
 //
 // It holds the ${NPM_TOKEN} placeholder rather than the token, which is exactly
 // why it is not a secret file and belongs in his repository. The mode says so.
 //
-// Not fatal. Older scaffolder versions ship no ci/ at all — hence the mkdir —
-// and by this point the grant is spent and the project exists, so a directory
-// we cannot write is no reason to throw away a working local install. Say what
-// is missing and what to put in it instead.
+// Not fatal, and that is a deliberate trade. By this point the grant is spent
+// and the project exists, so a directory we cannot write is no reason to throw
+// away a working local install. It does cost something now that nothing else
+// writes this file: npm accepts a NPM_CONFIG_USERCONFIG that does not exist
+// without a word, so a missing file surfaces as a bare 401 much later. The
+// deploy configs guard for that with an explicit `test -f ci/npmrc ||`, so the
+// failure is readable there; here we say what is missing and what to put in it.
 async function writeCiConfig({
   projectPath,
   content,
@@ -525,6 +530,16 @@ export function formatNextSteps({ projectPath, projectName, installed = true }, 
     '',
     'Je registry-token staat in je gebruikers-npmrc, zodat npm install blijft werken.',
     'Je licentiesleutel staat in .env; dat bestand hoort niet in git en is al genegeerd.',
+    '',
+    // A build machine has none of the above: no user npmrc, no .env. It reads
+    // ci/npmrc, which carries the placeholder and not the token, so without this
+    // variable npm sends the literal string `${NPM_TOKEN}` and the deploy dies
+    // on a 401 -- the same failure this whole file exists to prevent, one step
+    // later. That instruction lived only in the README and in comments inside
+    // files he has no reason to open; this is the one place he is looking.
+    'Ga je deployen naar Railway of Netlify: commit ci/npmrc mee en zet daar',
+    'NPM_TOKEN als build-variabele. De waarde staat in je .env. Zonder die',
+    'variabele mislukt de build met een 401.',
     '',
   ].join('\n');
 }

@@ -158,6 +158,14 @@ test('the CI token in .env names the file that spends it', () => {
 
   assert.match(env, /NPM_TOKEN=deploy-token-value/);
   assert.ok(env.includes('ci/npmrc'), `.env has to point at ci/npmrc, got:\n${env}`);
+  // npm resolves a relative NPM_CONFIG_USERCONFIG against the working directory
+  // and ignores a file that is not there without a word, so advice that hands a
+  // bare relative path works only from the repository root and fails silently
+  // everywhere else. The advice has to carry the absolute form.
+  assert.ok(
+    env.includes('NPM_CONFIG_USERCONFIG="$PWD/ci/npmrc"'),
+    `the advice must be an absolute path, got:\n${env}`,
+  );
   // A placeholder in .env would be handed to something as the literal token by
   // any parser that reads the file, so if one appears at all it stays a comment.
   for (const line of env.split('\n')) {
