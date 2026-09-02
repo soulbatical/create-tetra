@@ -296,7 +296,7 @@ export async function installProject({
       installed = false;
       write([
         '',
-        `Je registry-token kon niet worden opgeslagen:`,
+        'Je registry-token kon niet worden opgeslagen:',
         `  ${error.message}`,
         '',
         `Het project staat in ${projectPath}, maar zonder dat token kan npm de`,
