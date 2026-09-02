@@ -298,6 +298,58 @@ test('a chain of symlinks is followed to the end', async () => {
   }
 });
 
+// A cap that only stops the walk still writes the token somewhere arbitrary --
+// the last link in the loop -- and replaces that link with a regular file. A loop
+// is broken configuration with no correct target, so it has to say so.
+test('a loop of symlinks ends in a clear error, not a hang or a replaced link', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'create-tetra-npmrc-'));
+  const top = join(dir, '.npmrc');
+  const other = join(dir, 'looped-npmrc');
+  await symlink(other, top);
+  await symlink(top, other);
+
+  try {
+    await assert.rejects(
+      storeRegistryCredential(files, { path: top }),
+      (error) => {
+        assert.match(error.message, /symlink/i, 'the message must name the cause');
+        assert.ok(error.message.includes(top), 'the message must name the path the customer has to fix');
+        return true;
+      },
+    );
+
+    assert.equal((await lstat(top)).isSymbolicLink(), true, 'neither link may be replaced');
+    assert.equal((await lstat(other)).isSymbolicLink(), true);
+    await assert.rejects(stat(`${top}.create-tetra-${process.pid}`), { code: 'ENOENT' }, 'no temp file may be left');
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+// The cap is there for loops, not to put a ceiling on how someone may arrange
+// their dotfiles. A chain that ends must still be followed to its end.
+test('a chain just short of the cap is still followed to the end', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'create-tetra-npmrc-'));
+  const real = join(dir, 'real-npmrc');
+  await writeFile(real, '//other.example/:_authToken=keep-me\n');
+
+  let previous = real;
+  for (let step = 0; step < 9; step += 1) {
+    const link = join(dir, `link-${step}`);
+    await symlink(previous, link);
+    previous = link;
+  }
+
+  try {
+    const written = await storeRegistryCredential(files, { path: previous });
+    assert.equal(written, real, 'the end of the chain is what gets written');
+    assert.match(await readFile(real, 'utf8'), /keep-me/);
+    assert.match(await readFile(real, 'utf8'), /new-token/);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 // "Dotfiles not checked out yet" usually means the whole directory is missing,
 // and a raw ENOENT here strands the customer after the grant is already spent.
 test('a symlink into a directory that does not exist yet still works', async () => {

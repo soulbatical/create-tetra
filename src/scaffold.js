@@ -120,6 +120,14 @@ async function replaceUserFile(
   }
 }
 
+const MAX_SYMLINK_HOPS = 10;
+
+const symlinkLoop = (path) => [
+  `${path} is een symlink die na ${MAX_SYMLINK_HOPS} stappen nog steeds naar een symlink wijst.`,
+  'Dat is vrijwel zeker een lus, en er is dus geen bestand om je registry-token in te zetten.',
+  'Repareer de symlink, of wijs NPM_CONFIG_USERCONFIG naar een echt bestand.',
+].join('\n');
+
 // npm looks for credentials in the user-level npmrc, so that is where they go.
 // Only the entry for this registry is replaced; everything else is preserved.
 export async function storeRegistryCredential(
@@ -142,13 +150,18 @@ export async function storeRegistryCredential(
   // so write through to whatever it points at. lstat rather than realpath,
   // because a dangling link — dotfiles not checked out yet — must be followed
   // too instead of being quietly turned into a regular file.
+  //
   // readlink resolves one level, so a chain (top -> mid -> real) would leave the
   // middle link replaced by a regular file and the real content out of the
-  // effective config. Walk to the end, with a cap so a loop cannot hang us.
+  // effective config. Walk to the end instead. A loop has no end, so the walk
+  // needs a cap — and reaching that cap is not a place to write the token
+  // anyway: it would land on whichever link the walk stopped on and flatten it.
+  // POSIX allows around 40 hops; a real dotfiles setup never needs ten.
   let target = configured;
-  for (let hop = 0; hop < 32; hop += 1) {
+  for (let hop = 0; ; hop += 1) {
     const link = await describeLink(target);
     if (!link?.isSymbolicLink()) break;
+    if (hop >= MAX_SYMLINK_HOPS) throw new Error(symlinkLoop(configured));
     const destination = await readLinkImpl(target);
     target = isAbsolute(destination) ? destination : join(dirname(target), destination);
   }
