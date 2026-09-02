@@ -146,6 +146,26 @@ test('refuses a newline in any value that becomes an env line', () => {
   assert.throws(() => validateClaim(keys), /control characters/);
 });
 
+// NPM_TOKEN in .env is dead weight on its own: npm reads npm_config_* and its
+// npmrc files, never .env, and the project npmrc deliberately carries no
+// _authToken line. A customer who wires the variable into CI and expects it to
+// work gets a 401 with nothing pointing at the cause, so .env has to say which
+// line makes it do something.
+test('the CI token in .env comes with the npmrc line that makes it work', () => {
+  const { env } = renderProjectFiles(validateClaim(payload()));
+
+  assert.match(env, /NPM_TOKEN=deploy-token-value/);
+  assert.ok(
+    env.includes('//gitlab.com/api/v4/projects/85262758/packages/npm/:_authToken=${NPM_TOKEN}'),
+    `the exact npmrc line has to be there to copy, got:\n${env}`,
+  );
+  // Instructions only: it must stay a comment, or a .env parser would hand the
+  // literal placeholder to something as if it were the token.
+  for (const line of env.split('\n')) {
+    if (line.includes('${NPM_TOKEN}')) assert.match(line, /^#/, 'the example line must be commented out');
+  }
+});
+
 test('the project config carries no secret and no placeholder npm would send literally', () => {
   const { projectNpmrc, userNpmrcEntry, env } = renderProjectFiles(validateClaim(payload()));
 

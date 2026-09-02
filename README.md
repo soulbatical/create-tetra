@@ -54,8 +54,10 @@ create-tetra volgt die scheiding:
   gericht, zodat de plek waar het token staat en de plek waar npm kijkt niet uit
   elkaar kunnen lopen.
 - `<project>/.env` krijgt je licentiesleutel, en `NPM_TOKEN` voor CI-omgevingen
-  waar geen gebruikersconfiguratie bestaat. Dit bestand hoort niet in git;
-  create-tetra zet het voor je in `.gitignore`.
+  waar geen gebruikersconfiguratie bestaat. npm leest `.env` niet, dus die
+  variabele doet uit zichzelf niets: `.env` zet de `.npmrc`-regel erbij die je
+  in CI nodig hebt. Dit bestand hoort niet in git; create-tetra zet het voor je
+  in `.gitignore`.
 
 create-tetra draait de eerste `npm install` zelf, zodat je project bewezen
 installeerbaar is voordat je iets te horen krijgt.

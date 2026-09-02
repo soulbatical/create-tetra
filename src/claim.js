@@ -234,7 +234,10 @@ export function renderProjectFiles(claim) {
     ...(claim.licenseVerification
       ? [`TETRA_LICENSE_PUBLIC_KEYS_JSON=${claim.licenseVerification.publicKeysJson}`]
       : []),
-    '# Only needed in CI, where there is no user-level npm config.',
+    '# Only needed in CI, where there is no user-level npm config. npm never reads',
+    '# .env, so this variable does nothing on its own: add the line below to the',
+    '# npmrc your CI uses, and npm install will authenticate there too.',
+    `#   ${claim.registry.authKey}:_authToken=\${NPM_TOKEN}`,
     `NPM_TOKEN=${claim.registry.token}`,
     '',
   ].join('\n');
