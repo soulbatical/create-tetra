@@ -19,7 +19,12 @@ jobs:
           registry-url: https://registry.npmjs.org
       - run: npm test
       # A prerelease claims the name under `next`; only a full release moves `latest`.
+      #
+      # This package publishes through npm trusted publishing (OIDC), using the
+      # id-token permission above. There is deliberately no auth token in the
+      # env below: setup-node writes an .npmrc whose _authToken expands from
+      # that variable, and defining it makes npm attempt token auth instead of
+      # OIDC. Adding it back turns a working publish into a 401.
       - run: npm publish --access public --provenance --tag "$DIST_TAG"
         env:
           DIST_TAG: ${{ github.event.release.prerelease && 'next' || 'latest' }}
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
