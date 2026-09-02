@@ -226,6 +226,32 @@ test('a failed dependency install leaves a recoverable project, not a dead end',
   assert.match(output, /cd \/projects\/my-app && npm install/);
 });
 
+// storeCredential sits at the same place as the dependency install: the grant is
+// spent and the project is generated. A missing parent directory is the likely
+// cause and is created, but a symlink loop or a read-only home is not fixable
+// from here — and a raw throw there is the dead end B18 was built to avoid.
+test('a credential that cannot be stored leaves a diagnosable project, not a stack trace', async () => {
+  const h = harness();
+  let output = '';
+  h.options.write = (text) => { output += text; };
+  h.options.storeCredential = async () => {
+    throw new Error('/home/customer/.npmrc is een symlink die na 10 stappen nog steeds naar een symlink wijst.');
+  };
+
+  const result = await installProject(h.options);
+
+  assert.equal(result.installed, false, 'nothing may claim this project is ready to run');
+  assert.match(output, /Het project staat in \/projects\/my-app/);
+  assert.match(output, /symlink/, 'the reason has to reach the customer');
+  assert.equal(
+    h.execs.some(({ command, args, options }) => command === 'npm' && args[0] === 'install' && options.cwd === '/projects/my-app'),
+    false,
+    'installing dependencies without a stored token only produces a 401',
+  );
+  assert.equal(h.removedDirectories.includes('/tmp/tool'), true, 'the helper directory is still cleaned up');
+  assert.equal(output.includes('deploy-token-value'), false, 'the recovery message must not print the token');
+});
+
 test('the closing message does not contradict the recovery instructions', async () => {
   const { formatNextSteps } = await import('../src/scaffold.js');
   assert.equal(

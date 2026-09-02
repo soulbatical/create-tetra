@@ -278,7 +278,32 @@ export async function installProject({
     });
     await ignoreEnv(projectPath);
 
-    const credentialPath = await storeCredential(files, { path: userConfig.path });
+    // Same position as the dependency install below: the grant is spent and the
+    // project is generated, so a bare throw here is the dead end B18 exists to
+    // avoid. The likely cause — a dotfiles directory that is not cloned yet — is
+    // created by replaceUserFile, but a symlink loop or an unwritable home is
+    // not fixable from here. Without a token the dependency install can only
+    // return a 401, so stop and explain instead of adding a second failure.
+    let credentialPath;
+    try {
+      credentialPath = await storeCredential(files, { path: userConfig.path });
+    } catch (error) {
+      installed = false;
+      write([
+        '',
+        `Het project staat in ${projectPath}, maar je registry-token kon niet worden opgeslagen:`,
+        `  ${error.message}`,
+        '',
+        'Zonder dat token kan npm de @soulbatical-packages niet ophalen. Los het pad',
+        'hierboven op en draai daarna opnieuw:',
+        '',
+        '  npx create-tetra',
+        '',
+        'Je keurt dan opnieuw goed; deze goedkeuring is verbruikt.',
+        '',
+      ].join('\n'));
+      return { projectPath, projectName, installed };
+    }
     write(`Registry-token opgeslagen in ${credentialPath}.\n`);
 
     // Prove the project can install before telling the customer that it can.
