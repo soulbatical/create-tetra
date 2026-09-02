@@ -279,11 +279,16 @@ export async function installProject({
     await ignoreEnv(projectPath);
 
     // Same position as the dependency install below: the grant is spent and the
-    // project is generated, so a bare throw here is the dead end B18 exists to
-    // avoid. The likely cause — a dotfiles directory that is not cloned yet — is
-    // created by replaceUserFile, but a symlink loop or an unwritable home is
-    // not fixable from here. Without a token the dependency install can only
-    // return a 401, so stop and explain instead of adding a second failure.
+    // project is generated, so a bare throw here strands the customer with a
+    // stack trace and no idea what state anything is in. The likely cause — a
+    // dotfiles directory that is not cloned yet — is created by replaceUserFile,
+    // but a symlink loop or an unwritable home is not fixable from here.
+    //
+    // Without a stored token the dependency install can only return a 401, so
+    // stop rather than stack a second, more confusing failure on top of this
+    // one. Recovering means a fresh approval, and a fresh approval needs an
+    // empty directory, so say both instead of suggesting a rerun that this very
+    // project directory would now refuse.
     let credentialPath;
     try {
       credentialPath = await storeCredential(files, { path: userConfig.path });
@@ -291,15 +296,16 @@ export async function installProject({
       installed = false;
       write([
         '',
-        `Het project staat in ${projectPath}, maar je registry-token kon niet worden opgeslagen:`,
+        `Je registry-token kon niet worden opgeslagen:`,
         `  ${error.message}`,
         '',
-        'Zonder dat token kan npm de @soulbatical-packages niet ophalen. Los het pad',
-        'hierboven op en draai daarna opnieuw:',
+        `Het project staat in ${projectPath}, maar zonder dat token kan npm de`,
+        '@soulbatical-packages niet ophalen.',
         '',
-        '  npx create-tetra',
+        'Los het pad hierboven op, verwijder die projectmap of kies een andere naam,',
+        `en draai dan opnieuw: npx create-tetra ${projectName}`,
         '',
-        'Je keurt dan opnieuw goed; deze goedkeuring is verbruikt.',
+        'Je keurt dan opnieuw goed in de browser; deze goedkeuring is verbruikt.',
         '',
       ].join('\n'));
       return { projectPath, projectName, installed };

@@ -250,6 +250,11 @@ test('a credential that cannot be stored leaves a diagnosable project, not a sta
   );
   assert.equal(h.removedDirectories.includes('/tmp/tool'), true, 'the helper directory is still cleaned up');
   assert.equal(output.includes('deploy-token-value'), false, 'the recovery message must not print the token');
+  // Recovery needs a fresh approval, and installProject refuses a directory that
+  // is not empty -- which this one now is. Telling him to just rerun would walk
+  // him into that refusal.
+  assert.match(output, /verwijder die projectmap of kies een andere naam/);
+  assert.equal(/cd .*npm install/.test(output), false, 'npm install without a token only produces a 401');
 });
 
 test('the closing message does not contradict the recovery instructions', async () => {
