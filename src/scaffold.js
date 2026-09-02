@@ -239,6 +239,7 @@ export async function installProject({
   storeCredential = storeRegistryCredential,
   environment: inherited = process.env,
   resolveUserConfig: resolveConfig = resolveUserConfig,
+  cwd = process.cwd(),
 }) {
   if (!(await checkDirectory(projectPath))) {
     throw new Error(directoryInUse(projectPath));
@@ -320,7 +321,10 @@ export async function installProject({
         '@soulbatical-packages niet ophalen.',
         '',
         'Los het pad hierboven op, verwijder die projectmap of kies een andere naam,',
-        `en draai dan opnieuw: npx create-tetra ${projectName}`,
+        // The basename is only what the customer typed when the project is a
+        // direct child of where he stands, so `apps/my-app` would come back as
+        // `my-app` and put the retry somewhere else.
+        `en draai dan opnieuw: ${['npx create-tetra', relative(cwd, projectPath)].join(' ').trim()}`,
         '',
         'Je keurt dan opnieuw goed in de browser; deze goedkeuring is verbruikt.',
         '',

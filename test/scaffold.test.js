@@ -257,6 +257,31 @@ test('a credential that cannot be stored leaves a diagnosable project, not a sta
   assert.equal(/cd .*npm install/.test(output), false, 'npm install without a token only produces a 401');
 });
 
+// The recovery command has to recreate the project where it was asked for. The
+// basename is only that when the project is a direct child of where the customer
+// stands -- `npx create-tetra apps/my-app` would come back as `my-app` and land
+// the retry in the wrong directory. formatNextSteps already uses the relative
+// path for its `cd`; the same value is the right one here.
+test('the recovery command points back at the path the customer asked for', async () => {
+  for (const [projectPath, cwd, expected] of [
+    ['/projects/my-app', '/projects', 'npx create-tetra my-app'],
+    ['/projects/apps/my-app', '/projects', 'npx create-tetra apps/my-app'],
+    ['/projects/my-app', '/projects/my-app', 'npx create-tetra'],
+  ]) {
+    const h = harness();
+    let output = '';
+    h.options.write = (text) => { output += text; };
+    h.options.storeCredential = async () => { throw new Error('geen bestand om te schrijven'); };
+
+    await installProject({ ...h.options, projectPath, cwd });
+
+    assert.ok(
+      output.includes(expected),
+      `expected "${expected}" for ${projectPath} from ${cwd}, got:\n${output}`,
+    );
+  }
+});
+
 test('the closing message does not contradict the recovery instructions', async () => {
   const { formatNextSteps } = await import('../src/scaffold.js');
   assert.equal(

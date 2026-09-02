@@ -115,6 +115,7 @@ export async function runCreateTetra({
     files,
     write,
     checkDirectory,
+    cwd,
   });
 
   write(formatNextSteps(result, { cwd }));
