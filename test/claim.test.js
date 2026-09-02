@@ -149,21 +149,42 @@ test('refuses a newline in any value that becomes an env line', () => {
 // NPM_TOKEN in .env is dead weight on its own: npm reads npm_config_* and its
 // npmrc files, never .env, and the project npmrc deliberately carries no
 // _authToken line. A customer who wires the variable into CI and expects it to
-// work gets a 401 with nothing pointing at the cause, so .env has to say which
-// line makes it do something.
-test('the CI token in .env comes with the npmrc line that makes it work', () => {
+// work gets a 401 with nothing pointing at the cause, so .env has to name the
+// file that spends it. That file now exists, so .env points at it rather than
+// offering a line to copy: copied into the project .npmrc — the obvious place —
+// that line is the 401 it was meant to prevent.
+test('the CI token in .env names the file that spends it', () => {
   const { env } = renderProjectFiles(validateClaim(payload()));
 
   assert.match(env, /NPM_TOKEN=deploy-token-value/);
-  assert.ok(
-    env.includes('//gitlab.com/api/v4/projects/85262758/packages/npm/:_authToken=${NPM_TOKEN}'),
-    `the exact npmrc line has to be there to copy, got:\n${env}`,
-  );
-  // Instructions only: it must stay a comment, or a .env parser would hand the
-  // literal placeholder to something as if it were the token.
+  assert.ok(env.includes('ci/npmrc'), `.env has to point at ci/npmrc, got:\n${env}`);
+  // A placeholder in .env would be handed to something as the literal token by
+  // any parser that reads the file, so if one appears at all it stays a comment.
   for (const line of env.split('\n')) {
-    if (line.includes('${NPM_TOKEN}')) assert.match(line, /^#/, 'the example line must be commented out');
+    if (line.includes('${NPM_TOKEN}')) assert.match(line, /^#/, 'a placeholder must be commented out');
   }
+});
+
+// The one file in the project that is allowed to carry the placeholder, because
+// it is the one file a developer's npm never reads: only railway.toml and
+// netlify.toml select it, through NPM_CONFIG_USERCONFIG. It has to name the
+// customer's registry — the scaffolder ships ours — and it has to keep carrying
+// a placeholder rather than the token, because it is committed.
+test('the CI npmrc authenticates the customer registry with a placeholder, not the token', () => {
+  const { ciNpmrc } = renderProjectFiles(validateClaim(payload()));
+
+  assert.ok(
+    ciNpmrc.includes(`@soulbatical:registry=${REGISTRY}`),
+    `ci/npmrc has to map the scope to the customer registry, got:\n${ciNpmrc}`,
+  );
+  assert.ok(ciNpmrc.includes(AUTH_LINE), `ci/npmrc has to carry the auth line, got:\n${ciNpmrc}`);
+  assert.equal(ciNpmrc.includes('deploy-token-value'), false, 'a committed file may not carry the token');
+  assert.equal(ciNpmrc.includes('npm.pkg.github.com'), false, 'the internal registry must not survive');
+  // Everything that is not a comment is one of exactly those two directives.
+  assert.deepEqual(
+    ciNpmrc.split('\n').filter((line) => line !== '' && !line.startsWith('#')),
+    [`@soulbatical:registry=${REGISTRY}`, AUTH_LINE],
+  );
 });
 
 test('the project config carries no secret and no placeholder npm would send literally', () => {
@@ -197,9 +218,10 @@ test('an injected env line cannot reach the rendered .env', () => {
 });
 
 test('the customer never needs the org-wide token or Doppler', () => {
-  const { projectNpmrc, env } = renderProjectFiles(validateClaim(payload()));
+  const { projectNpmrc, ciNpmrc, env } = renderProjectFiles(validateClaim(payload()));
   for (const forbidden of ['npm.pkg.github.com', 'doppler', 'shared/prd']) {
     assert.equal(projectNpmrc.toLowerCase().includes(forbidden), false);
+    assert.equal(ciNpmrc.toLowerCase().includes(forbidden), false);
     assert.equal(env.toLowerCase().includes(forbidden), false);
   }
 });
@@ -281,9 +303,10 @@ test('a registry without a trailing slash is canonicalised before anything is de
   assert.equal(claim.registry.url, 'https://gitlab.com/api/v4/projects/85262758/packages/npm/');
   assert.equal(claim.registry.authKey, '//gitlab.com/api/v4/projects/85262758/packages/npm/');
 
-  const { projectNpmrc, userNpmrcEntry } = renderProjectFiles(claim);
+  const { projectNpmrc, ciNpmrc, userNpmrcEntry } = renderProjectFiles(claim);
   assert.match(projectNpmrc, /packages\/npm\/$/m);
   assert.match(userNpmrcEntry, /packages\/npm\/:_authToken=/);
+  assert.match(ciNpmrc, /^\/\/gitlab\.com\/api\/v4\/projects\/85262758\/packages\/npm\/:_authToken=\$\{NPM_TOKEN\}$/m);
 });
 
 // npm appends the package path to the registry, so a query string lands in the

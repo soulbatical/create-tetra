@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { sep } from 'node:path';
 import test from 'node:test';
 
 import { ensureEnvIsIgnored, formatNextSteps, installProject, storeRegistryCredential } from '../src/scaffold.js';
@@ -7,13 +8,19 @@ const AUTH_KEY = '//gitlab.example/npm/';
 
 const files = {
   projectNpmrc: '@soulbatical:registry=https://gitlab.example/npm/\nengine-strict=true\n',
+  ciNpmrc: [
+    '# npm configuration for build machines.',
+    '@soulbatical:registry=https://gitlab.example/npm/',
+    `${AUTH_KEY}:_authToken=\${NPM_TOKEN}`,
+    '',
+  ].join('\n'),
   userNpmrcEntry: `${AUTH_KEY}:_authToken=deploy-token-value`,
   env: 'TETRA_LICENSE_KEY=licence\nNPM_TOKEN=deploy-token-value\n',
   token: 'deploy-token-value',
   authKey: AUTH_KEY,
 };
 
-function harness({ scaffolderWrites = null, directoryFree = true } = {}) {
+function harness({ scaffolderWrites = null, directoryFree = true, failWritingCiConfig = null } = {}) {
   const writes = [];
   const execs = [];
   const removedDirectories = [];
@@ -36,7 +43,10 @@ function harness({ scaffolderWrites = null, directoryFree = true } = {}) {
       makeTempDirectory: async () => '/tmp/tool',
       makeDirectory: async (path, options) => { modes.push({ call: 'mkdir', path, options }); },
       setMode: async (path, mode) => { modes.push({ call: 'chmod', path, mode }); },
-      writeProjectFile: async (path, content, options) => { writes.push({ path, content, options }); },
+      writeProjectFile: async (path, content, options) => {
+        if (failWritingCiConfig && path.endsWith(`ci${sep}npmrc`)) throw failWritingCiConfig;
+        writes.push({ path, content, options });
+      },
       removeFile: async () => {},
       removeDirectory: async (path) => { removedDirectories.push(path); },
       ignoreEnv: async (path) => { ignoredEnvFor.push(path); },
@@ -553,4 +563,80 @@ test('the reason npm gave is passed on, not the generic wrapper', async () => {
   const notice = said.join('');
   assert.match(notice, /Unable to authenticate/);
   assert.doesNotMatch(notice, /\(Command failed: npm install\)/);
+});
+
+// Netlify installs before it runs the build command, so the credentials have to
+// be in a file rather than in something a script exports; railway.toml and
+// netlify.toml both point NPM_CONFIG_USERCONFIG at ci/npmrc. The scaffolder
+// ships that file naming the internal registry, which the customer cannot
+// reach: without this write his laptop installs fine and his first deploy dies
+// on a 401 — the same bug as the project .npmrc, one directory down.
+test("the customer's registry reaches ci/npmrc too, not only the project .npmrc", async () => {
+  const h = harness({
+    scaffolderWrites: {
+      path: `/projects/my-app/ci${sep}npmrc`,
+      content: '@soulbatical:registry=https://npm.pkg.github.com\n//npm.pkg.github.com/:_authToken=${NPM_TOKEN}\n',
+    },
+  });
+
+  await installProject(h.options);
+
+  const written = h.writes.filter(({ path }) => path === `/projects/my-app/ci${sep}npmrc`).at(-1);
+  assert.ok(written, 'ci/npmrc must be written');
+  assert.equal(written.content, files.ciNpmrc);
+  assert.match(written.content, /gitlab\.example/);
+  assert.equal(
+    written.content.includes('npm.pkg.github.com'),
+    false,
+    'the maintainer registry must not survive as the final ci/npmrc',
+  );
+});
+
+// It carries the placeholder, not the token, which is exactly why it is the one
+// npm config in the project that belongs in git. A 0600 file would say the
+// opposite, and the .gitignore we manage only ever adds .env.
+test('ci/npmrc is a committed file: no token, no private mode, not ignored', async () => {
+  const h = harness();
+  await installProject(h.options);
+
+  const written = h.writes.filter(({ path }) => path === `/projects/my-app/ci${sep}npmrc`).at(-1);
+  assert.equal(written.options?.mode, 0o644);
+  // Still created exclusively: the scaffolder's file is removed first rather
+  // than written through, so a symlink cannot redirect the write.
+  assert.equal(written.options?.flag, 'wx');
+  assert.equal(written.content.includes('deploy-token-value'), false);
+  assert.ok(written.content.includes('${NPM_TOKEN}'), 'the placeholder is the whole point of this file');
+
+  const ignored = h.writes.filter(({ path }) => path.endsWith('.gitignore'));
+  assert.equal(ignored.some(({ content }) => String(content).includes('ci/npmrc')), false);
+});
+
+// Scaffolder versions before this file existed ship no ci/ directory at all, so
+// the write has to create it rather than assume it.
+test('ci/ is created when the scaffolder did not ship it', async () => {
+  const h = harness();
+  await installProject(h.options);
+
+  const made = h.modes.filter(({ call, path }) => call === 'mkdir' && path === `/projects/my-app/ci`);
+  assert.equal(made.length, 1, 'the ci directory must be created');
+  assert.equal(made[0].options.recursive, true);
+});
+
+// The grant is spent and the project is generated by the time this runs, and a
+// working local install is worth more than a directory we could not write. Say
+// what is missing and what to put in it, then carry on.
+test('a ci/npmrc that cannot be written warns instead of throwing away the install', async () => {
+  const lines = [];
+  const h = harness({ failWritingCiConfig: Object.assign(new Error('EACCES: permission denied'), { code: 'EACCES' }) });
+
+  const result = await installProject({ ...h.options, write: (text) => lines.push(text) });
+
+  assert.equal(result.installed, true, 'the project itself is fine');
+  const notice = lines.join('');
+  assert.match(notice, /ci.npmrc kon niet worden geschreven/);
+  assert.match(notice, /EACCES/);
+  // The two directives, so the customer can write the file himself.
+  assert.ok(notice.includes('@soulbatical:registry=https://gitlab.example/npm/'), notice);
+  assert.ok(notice.includes(`${AUTH_KEY}:_authToken=\${NPM_TOKEN}`), notice);
+  assert.equal(notice.includes('deploy-token-value'), false, 'the warning must not print the token');
 });
