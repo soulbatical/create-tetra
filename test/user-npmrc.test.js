@@ -200,6 +200,12 @@ test('a relative or empty userconfig falls back instead of following the working
 
 // A repository the customer merely cloned must not be able to redirect where
 // their personal token lands.
+//
+// The environment matters more than the chdir here. npx does not hand the child
+// a clean env: it resolves `userconfig=` from the project .npmrc it found in the
+// working directory and injects the answer as an absolute `npm_config_userconfig`.
+// A hand-built `{}` proves only that an empty environment falls back, which is
+// not the case the hostile repository exercises — so run the real shape too.
 test('a project .npmrc cannot redirect the token', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'create-tetra-npmrc-'));
   // The home directory has to sit outside the repository, or the containment
@@ -207,26 +213,40 @@ test('a project .npmrc cannot redirect the token', async () => {
   const outside = await mkdtemp(join(tmpdir(), 'create-tetra-home-'));
   const previous = process.cwd();
   await writeFile(join(dir, '.npmrc'), 'userconfig=./collected.npmrc\n');
+  const collected = join(dir, 'collected.npmrc');
+
+  const environments = [
+    // What npx actually passes: npm's own resolution of the project .npmrc,
+    // already absolute, so an isAbsolute guard never sees anything suspicious.
+    ['npx injects npm\'s resolution', { npm_config_userconfig: collected }],
+    // Both forms at once: npm reads `/^npm_config_/i`, so the lowercase one must
+    // not win just because it is also present.
+    ['both cases present', { npm_config_userconfig: collected, NPM_CONFIG_USERCONFIG: collected }],
+    // The real environment, so an ambient injection would show up here rather
+    // than being defined away by a hand-built object.
+    ['the ambient environment', undefined],
+  ];
 
   try {
     process.chdir(dir);
     const home = join(outside, '.npmrc');
-    const written = await storeRegistryCredential(files, {
-      // The real environment, so an injected npm_config_userconfig would show up
-      // here rather than being defined away by a hand-built object.
-      resolvePath: () => resolveUserConfigPath({ fallback: home, cwd: dir }),
-    });
 
-    // The property is containment, not a specific path: CI sets its own
-    // NPM_CONFIG_USERCONFIG, so asserting equality with the fallback would test
-    // the runner instead of the code. What must hold everywhere is that nothing
-    // the repository points at can pull the token inside it.
-    assert.equal(
-      written.startsWith(`${dir}/`),
-      false,
-      `the token must not land inside the repository (${written})`,
-    );
-    await assert.rejects(stat(join(dir, 'collected.npmrc')), { code: 'ENOENT' });
+    for (const [label, env] of environments) {
+      const written = await storeRegistryCredential(files, {
+        resolvePath: () => resolveUserConfigPath({ ...(env ? { env } : {}), fallback: home, cwd: dir }),
+      });
+
+      // The property is containment, not a specific path: CI sets its own
+      // NPM_CONFIG_USERCONFIG, so asserting equality with the fallback would test
+      // the runner instead of the code. What must hold everywhere is that nothing
+      // the repository points at can pull the token inside it.
+      assert.equal(
+        written.startsWith(`${dir}/`),
+        false,
+        `${label}: the token must not land inside the repository (${written})`,
+      );
+      await assert.rejects(stat(collected), { code: 'ENOENT' }, `${label}: nothing may be written into the repository`);
+    }
   } finally {
     process.chdir(previous);
     await rm(dir, { recursive: true, force: true });
