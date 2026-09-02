@@ -134,11 +134,12 @@ test('a missing npmrc is created with just our entry', async () => {
 test('an explicit userconfig from the customer is honoured', () => {
   assert.equal(
     resolveUserConfigPath({
-      env: { NPM_CONFIG_USERCONFIG: '/elsewhere/custom-npmrc' },
+      env: { NPM_CONFIG_USERCONFIG: '/home/c/elsewhere/custom-npmrc' },
+      home: '/home/c',
       fallback: '/home/c/.npmrc',
       cwd: '/work',
     }),
-    '/elsewhere/custom-npmrc',
+    '/home/c/elsewhere/custom-npmrc',
   );
 });
 
@@ -150,6 +151,7 @@ test('the lowercase variable npx injects is ignored', () => {
   assert.equal(
     resolveUserConfigPath({
       env: { npm_config_userconfig: '/work/hostile-repo/collected.npmrc' },
+      home: '/home/c',
       fallback: '/home/c/.npmrc',
       cwd: '/work/hostile-repo',
     }),
@@ -183,24 +185,79 @@ test('the lowercase variable is ignored even where no containment rule would cat
 // user-level config, which is what makes containment the right guard.
 test('a userconfig inside the working directory is refused', () => {
   for (const [configured, cwd] of [
-    ['/work/repo/collected.npmrc', '/work/repo'],
-    ['/work/repo/nested/deep.npmrc', '/work/repo'],
+    ['/home/c/work/repo/collected.npmrc', '/home/c/work/repo'],
+    ['/home/c/work/repo/nested/deep.npmrc', '/home/c/work/repo'],
   ]) {
     assert.equal(
-      resolveUserConfigPath({ env: { NPM_CONFIG_USERCONFIG: configured }, fallback: '/home/c/.npmrc', cwd }),
+      resolveUserConfigPath({
+        env: { NPM_CONFIG_USERCONFIG: configured },
+        home: '/home/c',
+        fallback: '/home/c/.npmrc',
+        cwd,
+      }),
       '/home/c/.npmrc',
       `expected ${configured} to be refused from ${cwd}`,
     );
   }
   assert.equal(
     resolveUserConfigPath({
-      env: { NPM_CONFIG_USERCONFIG: '/work/repo-sibling/.npmrc' },
+      env: { NPM_CONFIG_USERCONFIG: '/home/c/work/repo-sibling/.npmrc' },
+      home: '/home/c',
       fallback: '/home/c/.npmrc',
-      cwd: '/work/repo',
+      cwd: '/home/c/work/repo',
     }),
-    '/work/repo-sibling/.npmrc',
+    '/home/c/work/repo-sibling/.npmrc',
     'a sibling directory is not containment',
   );
+});
+
+// The other half of that guard, and the half Windows actually needs. A hostile
+// project .npmrc does not have to point inside itself: `userconfig=../outside/x`
+// makes npm resolve to an absolute path next to the repository, which clears
+// both the isAbsolute check and the in-cwd rule. On win32 process.env lookups
+// are case-insensitive, so npx's injected value arrives under the uppercase
+// name and there is nothing left to tell it apart from the customer's own
+// setting -- except that a real user-level config lives under the home
+// directory and this does not.
+test('a userconfig outside the home directory is refused', () => {
+  for (const configured of [
+    '/work/npxprobe/outside/collected.npmrc', // the reviewed measurement: sibling of the repo
+    '/tmp/attacker/collected.npmrc',
+    '/etc/npmrc',
+  ]) {
+    const resolved = resolveUserConfig({
+      env: { NPM_CONFIG_USERCONFIG: configured },
+      home: '/home/c',
+      fallback: '/home/c/.npmrc',
+      cwd: '/work/npxprobe/repo',
+    });
+    assert.equal(resolved.path, '/home/c/.npmrc', `expected ${configured} to be refused`);
+    assert.deepEqual(
+      resolved.ignored,
+      { value: configured, reason: 'outside-home' },
+      'refusing it silently would leave npm reading a different file than the customer configured',
+    );
+  }
+});
+
+// The guard is a boundary, not a blanket refusal: the home directory itself and
+// anything under it stays honoured, or a customer who moved his npmrc on purpose
+// would silently stop being followed.
+test('a userconfig under the home directory is still honoured', () => {
+  for (const configured of [
+    '/home/c/.npmrc',
+    '/home/c/mine.npmrc',
+    '/home/c/.config/npm/npmrc',
+  ]) {
+    const resolved = resolveUserConfig({
+      env: { NPM_CONFIG_USERCONFIG: configured },
+      home: '/home/c',
+      fallback: '/home/c/.npmrc',
+      cwd: '/work/repo',
+    });
+    assert.equal(resolved.path, configured, `expected ${configured} to be honoured`);
+    assert.equal(resolved.ignored, null);
+  }
 });
 
 test('a relative or empty userconfig falls back instead of following the working directory', () => {
@@ -393,28 +450,20 @@ test('a symlink into a directory that does not exist yet still works', async () 
 // customer needs to hear it, or the install fails later with a bare 401 and
 // nothing pointing at the cause.
 test('a userconfig we refuse to follow says so, and says which one', () => {
-  const relative = resolveUserConfig({
-    env: { NPM_CONFIG_USERCONFIG: './collected.npmrc' },
-    fallback: '/home/customer/.npmrc',
-    cwd: '/work',
-  });
-  assert.equal(relative.path, '/home/customer/.npmrc');
-  assert.deepEqual(relative.ignored, { value: './collected.npmrc', reason: 'relative' });
+  const settings = { home: '/home/customer', fallback: '/home/customer/.npmrc', cwd: '/work' };
 
-  const inside = resolveUserConfig({
-    env: { NPM_CONFIG_USERCONFIG: '/work/repo/collected.npmrc' },
-    fallback: '/home/customer/.npmrc',
-    cwd: '/work',
-  });
-  assert.equal(inside.path, '/home/customer/.npmrc');
-  assert.deepEqual(inside.ignored, { value: '/work/repo/collected.npmrc', reason: 'in-cwd' });
+  for (const [configured, reason] of [
+    ['./collected.npmrc', 'relative'],
+    ['/work/repo/collected.npmrc', 'in-cwd'],
+    ['/etc/npmrc', 'outside-home'],
+  ]) {
+    const resolved = resolveUserConfig({ ...settings, env: { NPM_CONFIG_USERCONFIG: configured } });
+    assert.equal(resolved.path, '/home/customer/.npmrc');
+    assert.deepEqual(resolved.ignored, { value: configured, reason }, `expected ${configured} to report ${reason}`);
+  }
 
   assert.equal(
-    resolveUserConfig({
-      env: { NPM_CONFIG_USERCONFIG: '/home/customer/mine.npmrc' },
-      fallback: '/home/customer/.npmrc',
-      cwd: '/work',
-    }).ignored,
+    resolveUserConfig({ ...settings, env: { NPM_CONFIG_USERCONFIG: '/home/customer/mine.npmrc' } }).ignored,
     null,
     'a usable setting is not a complaint',
   );

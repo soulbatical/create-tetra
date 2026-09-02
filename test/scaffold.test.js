@@ -330,20 +330,27 @@ test('npm config inherited from npx cannot steer either install', async () => {
 // A userconfig we refuse to use changes where npm looks for the token, so the
 // customer has to be told; otherwise the install fails with a bare 401 later.
 test('a userconfig we will not follow is reported instead of silently dropped', async () => {
-  const h = harness();
-  const said = [];
-  await installProject({
-    ...h.options,
-    write: (text) => said.push(text),
-    resolveUserConfig: () => ({
-      path: '/home/customer/.npmrc',
-      ignored: { value: './collected.npmrc', reason: 'relative' },
-    }),
-  });
+  // Every reason resolveUserConfig can return needs a sentence behind it. A new
+  // reason with no text renders as "undefined", which is worse than silence.
+  for (const [value, reason] of [
+    ['./collected.npmrc', 'relative'],
+    ['/work/repo/collected.npmrc', 'in-cwd'],
+    ['/etc/npmrc', 'outside-home'],
+  ]) {
+    const h = harness();
+    const said = [];
+    await installProject({
+      ...h.options,
+      write: (text) => said.push(text),
+      resolveUserConfig: () => ({ path: '/home/customer/.npmrc', ignored: { value, reason } }),
+    });
 
-  const notice = said.join('');
-  assert.match(notice, /NPM_CONFIG_USERCONFIG/, 'name the setting being ignored');
-  assert.match(notice, /\.\/collected\.npmrc/, 'and the value, so it can be found');
+    const notice = said.join('');
+    assert.match(notice, /NPM_CONFIG_USERCONFIG/, 'name the setting being ignored');
+    assert.ok(notice.includes(value), 'and the value, so it can be found');
+    assert.match(notice, /\/home\/customer\/\.npmrc/, 'and where the token goes instead');
+    assert.equal(notice.includes('undefined'), false, `reason ${reason} has no sentence behind it`);
+  }
 });
 
 // libuv terminates a timed-out process on Windows without a term signal, so

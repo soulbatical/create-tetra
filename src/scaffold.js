@@ -40,9 +40,14 @@ async function writeSecretFile(path, content, { write: writeImpl = writeFile, re
 // their personal registry token is written.
 //
 // Windows environment lookups are case-insensitive, so there the two cannot be
-// told apart. The containment check below is what covers that: a userconfig
-// inside the current working directory is never a real user-level config, and is
-// exactly what a hostile repository would point at.
+// told apart and the name alone protects nothing. Containment is what covers
+// that, and it takes both halves: a userconfig inside the current working
+// directory is never a real user-level config, and neither is one outside the
+// home directory. A hostile project .npmrc does not have to point inside itself
+// — `userconfig=../outside/collected.npmrc` resolves to an absolute path beside
+// the repository, which clears both isAbsolute and the in-cwd rule. Requiring
+// the path to live under the home directory is what closes that, because a
+// repository cannot move the customer's home.
 //
 // Refusing a setting silently is its own trap: npm then reads a different file
 // than the customer configured, and the install fails later with a bare 401. So
@@ -65,8 +70,18 @@ export function resolveUserConfig({
   // deliberately do not let decide this. Fall back rather than follow.
   if (!isAbsolute(expanded)) return { path: fallback, ignored: { value: configured, reason: 'relative' } };
 
-  const inCwd = resolvePathname(expanded).startsWith(`${resolvePathname(cwd)}${sep}`);
-  if (inCwd) return { path: fallback, ignored: { value: configured, reason: 'in-cwd' } };
+  const target = resolvePathname(expanded);
+  if (target.startsWith(`${resolvePathname(cwd)}${sep}`)) {
+    return { path: fallback, ignored: { value: configured, reason: 'in-cwd' } };
+  }
+
+  // The home directory itself counts: `NPM_CONFIG_USERCONFIG=~` is degenerate,
+  // but the boundary should be the directory and everything under it, not
+  // everything under it alone.
+  const root = resolvePathname(home);
+  if (target !== root && !target.startsWith(`${root}${sep}`)) {
+    return { path: fallback, ignored: { value: configured, reason: 'outside-home' } };
+  }
 
   return { path: expanded, ignored: null };
 }
@@ -75,12 +90,14 @@ export function resolveUserConfigPath(options = {}) {
   return resolveUserConfig(options).path;
 }
 
-const userConfigNotice = ({ value, reason }, path) => {
-  const why = reason === 'relative'
-    ? 'dat pad is relatief en zou van je huidige map afhangen'
-    : 'dat pad ligt in je huidige map en is dus geen persoonlijke configuratie';
-  return `Let op: NPM_CONFIG_USERCONFIG staat op ${value}; ${why}.\nJe registry-token gaat naar ${path}.\n`;
+const USER_CONFIG_REASONS = {
+  relative: 'dat pad is relatief en zou van je huidige map afhangen',
+  'in-cwd': 'dat pad ligt in je huidige map en is dus geen persoonlijke configuratie',
+  'outside-home': 'dat pad ligt buiten je home-map en is dus geen persoonlijke configuratie',
 };
+
+const userConfigNotice = ({ value, reason }, path) =>
+  `Let op: NPM_CONFIG_USERCONFIG staat op ${value}; ${USER_CONFIG_REASONS[reason]}.\nJe registry-token gaat naar ${path}.\n`;
 
 // npx hands us npm's resolution of whatever directory the customer was standing
 // in as npm_config_* variables, and npm reads those back with a higher priority
