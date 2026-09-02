@@ -29,6 +29,15 @@ async function writeSecretFile(path, content, { write: writeImpl = writeFile, re
   await writeImpl(path, content, { mode: 0o600, flag: 'wx' });
 }
 
+// Compared as text rather than through resolve(): `platform` is a parameter, so
+// this runs under the host's path rules, and on a POSIX host those are neither
+// case-insensitive nor backslash-aware. Windows is both.
+const sameWindowsFile = (configured, fallback, home) => {
+  const expanded = /^~[/\\]/.test(configured) ? join(home, configured.slice(2)) : configured;
+  const normalize = (value) => value.replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
+  return normalize(expanded) === normalize(fallback);
+};
+
 // npm reads the userconfig the environment points at rather than the one in the
 // home directory, so a customer's own NPM_CONFIG_USERCONFIG has to be honoured.
 //
@@ -64,15 +73,6 @@ async function writeSecretFile(path, content, { write: writeImpl = writeFile, re
 // Refusing a setting silently is its own trap: npm then reads a different file
 // than the customer configured, and the install fails later with a bare 401. So
 // report which setting was dropped and why, and let the caller say it out loud.
-// Compared as text rather than through resolve(): `platform` is a parameter, so
-// this runs under the host's path rules, and on a POSIX host those are neither
-// case-insensitive nor backslash-aware. Windows is both.
-const sameWindowsFile = (configured, fallback, home) => {
-  const expanded = /^~[/\\]/.test(configured) ? join(home, configured.slice(2)) : configured;
-  const normalize = (value) => value.replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
-  return normalize(expanded) === normalize(fallback);
-};
-
 export function resolveUserConfig({
   env = process.env,
   home = homedir(),
@@ -87,7 +87,8 @@ export function resolveUserConfig({
   // the value is not followed there. It is only worth mentioning when it points
   // somewhere other than where the token is going anyway.
   if (platform === 'win32') {
-    return { path: fallback, ignored: sameWindowsFile(configured, fallback, home) ? null : { value: configured, reason: 'win32' } };
+    const changed = !sameWindowsFile(configured, fallback, home);
+    return { path: fallback, ignored: changed ? { value: configured, reason: 'win32' } : null };
   }
 
   // npm's parseField also expands `~\` on win32, but a win32 value never reaches
