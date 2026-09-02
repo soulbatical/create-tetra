@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { ensureEnvIsIgnored, installProject, storeRegistryCredential } from '../src/scaffold.js';
+import { ensureEnvIsIgnored, formatNextSteps, installProject, storeRegistryCredential } from '../src/scaffold.js';
 
 const AUTH_KEY = '//gitlab.example/npm/';
 
@@ -348,16 +348,48 @@ test('the recovery command points back at the path the customer asked for', asyn
   }
 });
 
-test('the closing message does not contradict the recovery instructions', async () => {
-  const { formatNextSteps } = await import('../src/scaffold.js');
+test('the closing message does not contradict the recovery instructions', () => {
   assert.equal(
     formatNextSteps({ projectPath: '/p/app', projectName: 'app', installed: false }, { cwd: '/p' }),
     '',
   );
   assert.match(
     formatNextSteps({ projectPath: '/p/app', projectName: 'app', installed: true }, { cwd: '/p' }),
-    /npm run dev/,
+    /npm run dev:local/,
   );
+});
+
+// The last thing the customer is told to do, and the one command he will
+// actually run. `npm run dev` is `doppler run -- npm run dev:all` in the
+// scaffolded project, so from a fresh install it fails on a missing Doppler
+// binary, or -- if he happens to have one -- on "You must specify a project".
+// `npm run dev:local` is the path that works from nothing, and the generated
+// README already draws that line. Asserted on the exact step line, because a
+// substring match on "npm run dev" cannot tell the two apart.
+test('the closing message starts the customer on the path that works from nothing', () => {
+  const lines = formatNextSteps(
+    { projectPath: '/home/c/demo-app', projectName: 'demo-app', installed: true },
+    { cwd: '/home/c' },
+  ).split('\n');
+  const steps = lines.filter((line) => line.startsWith('  ') && line.trim() !== '');
+
+  assert.deepEqual(steps, ['  cd demo-app', '  npm run dev:local']);
+  assert.equal(
+    steps.includes('  npm run dev'),
+    false,
+    'npm run dev needs Doppler and cannot be the first command a fresh customer runs',
+  );
+
+  const prose = lines.filter((line) => !line.startsWith('  ')).join('\n');
+  assert.match(prose, /Supabase/, 'say what dev:local needs before he finds out from a script');
+  // Both, because dev-local.sh only checks that Supabase is running: without the
+  // reset the command starts and the app has no schema, which moves the stumble
+  // rather than removing it.
+  assert.match(prose, /supabase start/, 'and name the command that provides it');
+  assert.match(prose, /supabase db reset/, 'including the one that gives the app its schema');
+  assert.match(prose, /Doppler/, 'say what npm run dev is for, so the script name is not a mystery');
+  assert.match(prose, /npm run dev\b/, 'and name it, since that is the other half of the choice');
+  assert.match(prose, /README/, 'the rest belongs in the project, not in this message');
 });
 
 // npx resolves npm's own config for the directory the customer happened to be

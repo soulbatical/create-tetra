@@ -431,7 +431,16 @@ export function formatNextSteps({ projectPath, projectName, installed = true }, 
     '',
     'Volgende stappen:',
     ...(step === '' ? [] : [`  cd ${step}`]),
-    '  npm run dev',
+    // Not `npm run dev`: in the generated project that is
+    // `doppler run -- npm run dev:all`, so from a fresh install it fails on a
+    // missing doppler binary, or on "You must specify a project" if one happens
+    // to be there. `dev:local` is the path that runs from nothing, which is the
+    // state everyone is in one command after create-tetra finishes.
+    '  npm run dev:local',
+    '',
+    'Daarvoor heb je de Supabase CLI nodig: supabase start en supabase db reset.',
+    'Zodra je Doppler gekoppeld hebt, is npm run dev het pad. De README in je project',
+    'legt allebei uit.',
     '',
     'Je registry-token staat in je gebruikers-npmrc, zodat npm install blijft werken.',
     'Je licentiesleutel staat in .env; dat bestand hoort niet in git en is al genegeerd.',
