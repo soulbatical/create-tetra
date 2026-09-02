@@ -640,3 +640,32 @@ test('a ci/npmrc that cannot be written warns instead of throwing away the insta
   assert.ok(notice.includes(`${AUTH_KEY}:_authToken=\${NPM_TOKEN}`), notice);
   assert.equal(notice.includes('deploy-token-value'), false, 'the warning must not print the token');
 });
+
+// The customer reads the terminal. He does not read the README, and he has no
+// reason to open ci/npmrc. If the one variable that file depends on is named
+// nowhere he looks, his first deploy fails on a literal `Bearer ${NPM_TOKEN}`
+// — the exact 401 this whole feature removes, one step later.
+test('the closing message names the build variable the CI file depends on', () => {
+  const message = formatNextSteps(
+    { projectPath: '/projects/my-app', projectName: 'my-app' },
+    { cwd: '/projects' },
+  );
+
+  assert.match(message, /ci\/npmrc/);
+  assert.match(message, /NPM_TOKEN/);
+  assert.match(message, /401/);
+  // It must point at .env for the value rather than printing one.
+  assert.equal(message.includes('deploy-token-value'), false);
+});
+
+// Nothing above may leak into the failure path: that message already explains a
+// broken install and must not be followed by deploy advice for a project that
+// does not work yet.
+test('the deploy advice is withheld when the install did not finish', () => {
+  const message = formatNextSteps(
+    { projectPath: '/projects/my-app', projectName: 'my-app', installed: false },
+    { cwd: '/projects' },
+  );
+
+  assert.equal(message, '');
+});

@@ -225,6 +225,9 @@ export function validateClaim(value, { allowedHosts, allowInsecure, requiredScop
 // and railway.toml and netlify.toml point NPM_CONFIG_USERCONFIG at it. Netlify
 // installs before it runs the build command, which is why this has to be a file
 // in the repository rather than a line some script exports.
+//
+// Nothing else writes it: the scaffolder stopped shipping one, precisely so
+// there is a single producer and no maintainer-facing version to overwrite.
 export function renderProjectFiles(claim) {
   const projectNpmrc = [
     `${claim.registry.scope}:registry=${claim.registry.url}`,
@@ -265,7 +268,10 @@ export function renderProjectFiles(claim) {
     '# Only needed on a build machine, which has no user-level npm config. npm',
     '# never reads .env, so this variable does nothing on its own: ci/npmrc holds',
     '# the line that spends it, and railway.toml and netlify.toml already select',
-    '# that file. On any other CI, set NPM_CONFIG_USERCONFIG=ci/npmrc there too.',
+    '# that file. On any other CI, select it there too — with an absolute path,',
+    '# because npm resolves a relative one against the working directory and',
+    '# silently ignores a file that is not there:',
+    '#   NPM_CONFIG_USERCONFIG="$PWD/ci/npmrc"',
     `NPM_TOKEN=${claim.registry.token}`,
     '',
   ].join('\n');
