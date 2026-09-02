@@ -157,6 +157,27 @@ test('the lowercase variable npx injects is ignored', () => {
   );
 });
 
+// The case above is caught twice over: the containment rules would refuse that
+// path even if the lowercase variable were read, so on its own it does not pin
+// the precedence down. `userconfig=../outside/collected.npmrc` in the project
+// .npmrc makes npm resolve to somewhere absolute, outside the repository, and a
+// hostile repository is free to aim that at the customer's own home directory.
+// Nothing but reading the uppercase name alone rejects this one, so this is the
+// test that fails if line 57 is ever "tidied up" back into a `??` chain.
+test('the lowercase variable is ignored even where no containment rule would catch it', () => {
+  const resolved = resolveUserConfig({
+    env: { npm_config_userconfig: '/home/c/.config/attacker/collected.npmrc' },
+    home: '/home/c',
+    fallback: '/home/c/.npmrc',
+    cwd: '/work/hostile-repo',
+  });
+
+  // Absolute, outside cwd, and inside home: every guard other than the name
+  // itself says yes to this path.
+  assert.equal(resolved.path, '/home/c/.npmrc');
+  assert.equal(resolved.ignored, null, 'a variable we never read is not a setting we refuse');
+});
+
 // Windows environment lookups are case-insensitive, so the two variables cannot
 // be told apart there. A userconfig inside the working directory is never a real
 // user-level config, which is what makes containment the right guard.
