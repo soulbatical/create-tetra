@@ -19,12 +19,14 @@ function harness({ scaffolderWrites = null, directoryFree = true } = {}) {
   const removedDirectories = [];
   const modes = [];
   const stored = [];
+  const ignoredEnvFor = [];
   return {
     writes,
     execs,
     removedDirectories,
     modes,
     stored,
+    ignoredEnvFor,
     options: {
       projectPath: '/projects/my-app',
       projectName: 'my-app',
@@ -37,7 +39,7 @@ function harness({ scaffolderWrites = null, directoryFree = true } = {}) {
       writeProjectFile: async (path, content, options) => { writes.push({ path, content, options }); },
       removeFile: async () => {},
       removeDirectory: async (path) => { removedDirectories.push(path); },
-      ignoreEnv: async () => {},
+      ignoreEnv: async (path) => { ignoredEnvFor.push(path); },
       storeCredential: async (given, options = {}) => {
         stored.push({ files: given, path: options.path });
         return options.path ?? '/home/customer/.npmrc';
@@ -250,6 +252,18 @@ test('the project install is not allowed to fail on its own output', async () =>
   );
   assert.ok(projectInstall.options.maxBuffer > 1024 * 1024, 'the default buffer is too small for an install');
   assert.ok(projectInstall.options.timeout > 0, 'a hung install must not hang the CLI forever');
+});
+
+// .env carries the licence key and the registry token, and the closing message
+// promises it is already ignored. ensureEnvIsIgnored is tested on its own, but
+// that installProject calls it was not -- the harness stubs it out and nobody
+// looked. Today the scaffolder also writes .env into .gitignore, so this is a
+// second net; that is an assumption about another package which nothing here
+// pins down.
+test('the .env safety net is actually put in place', async () => {
+  const h = harness();
+  await installProject(h.options);
+  assert.deepEqual(h.ignoredEnvFor, ['/projects/my-app']);
 });
 
 test('.env is added to .gitignore exactly once', async () => {
