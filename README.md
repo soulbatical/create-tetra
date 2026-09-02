@@ -2,10 +2,6 @@
 
 Publieke, dependencyvrije bootstrap voor Tetra-applicaties.
 
-> Availability: nog niet beschikbaar. `create-tetra@next` staat op npm als
-> gereserveerde naamclaim; die prerelease installeert bewust niets. Het commando
-> hieronder werkt zodra er een `latest`-versie is.
-
 ```bash
 npx create-tetra my-app
 ```
