@@ -187,7 +187,7 @@ test('the lowercase variable is ignored even where no containment rule would cat
 // directory, so it can point at an absolute path that is outside cwd and inside
 // home and clear every guard at once. The only boundary that holds on that
 // platform is not reading the environment there at all.
-test('on win32 the environment is not read, because npm-s injection cannot be told apart', () => {
+test('on win32 the environment is never followed, because npm-s injection cannot be told apart', () => {
   // The same fixture as the POSIX test above, through the uppercase door.
   const resolved = resolveUserConfig({
     env: { NPM_CONFIG_USERCONFIG: '/home/c/.config/attacker/collected.npmrc' },
@@ -203,6 +203,37 @@ test('on win32 the environment is not read, because npm-s injection cannot be to
     { value: '/home/c/.config/attacker/collected.npmrc', reason: 'win32' },
     'and the customer has to hear that his setting was dropped, and where the token went instead',
   );
+});
+
+// npx injects npm_config_userconfig on every run, set to npm's own default even
+// when nobody configured anything, and on win32 that lands under the uppercase
+// name as well. It names the very file we are about to write to, so nothing has
+// been dropped and there is nothing to report. Saying it anyway would put a
+// warning about his npm configuration in front of every Windows customer during
+// the only install he ever does -- and, worse, make the one notice that does
+// matter unreadable, because a warning that fires on every run is not read.
+test('on win32 the default npx injects is not reported as a dropped setting', () => {
+  for (const configured of [
+    'C:\\Users\\c\\.npmrc',
+    // npm hands paths back with either separator, and Windows paths are
+    // case-insensitive -- compared as text, so this has to be handled here
+    // rather than left to path.resolve, which follows the host's rules.
+    'C:/Users/c/.npmrc',
+    'c:\\users\\c\\.NPMRC',
+    'C:\\Users\\c\\.npmrc\\',
+    '~\\.npmrc',
+    '~/.npmrc',
+  ]) {
+    const resolved = resolveUserConfig({
+      env: { NPM_CONFIG_USERCONFIG: configured },
+      home: 'C:\\Users\\c',
+      fallback: 'C:\\Users\\c\\.npmrc',
+      cwd: 'C:\\Users\\c\\projects\\app',
+      platform: 'win32',
+    });
+    assert.equal(resolved.path, 'C:\\Users\\c\\.npmrc');
+    assert.equal(resolved.ignored, null, `${configured} names the file we are already using`);
+  }
 });
 
 // The measured layout from the review: two checkouts side by side under the home

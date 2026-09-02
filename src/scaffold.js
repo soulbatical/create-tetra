@@ -49,15 +49,30 @@ async function writeSecretFile(path, content, { write: writeImpl = writeFile, re
 // whatever the file already held, so the repository would get to choose which
 // existing file the token is appended to, invisibly.
 //
-// So on win32 the environment is not read at all and the home-directory npmrc is
+// So on win32 the value is read but never followed: the home-directory npmrc is
 // used instead. That costs the Windows customer who genuinely set the variable,
-// which is why it is reported rather than done quietly. On POSIX the uppercase
-// name can only be his own doing, so it is still honoured, and the containment
-// rules below stay as the second line under it.
+// which is why it is reported rather than done quietly — but only when it
+// actually costs him something. npx injects the variable on every run with npm's
+// own default as the value, so on win32 it usually names the file we were going
+// to use anyway. Reporting that would put a warning in front of every Windows
+// customer about nothing, and a warning that fires on every run is one nobody
+// reads by the time it matters.
+//
+// On POSIX the uppercase name can only be his own doing, so it is still
+// honoured, and the containment rules below stay as the second line under it.
 //
 // Refusing a setting silently is its own trap: npm then reads a different file
 // than the customer configured, and the install fails later with a bare 401. So
 // report which setting was dropped and why, and let the caller say it out loud.
+// Compared as text rather than through resolve(): `platform` is a parameter, so
+// this runs under the host's path rules, and on a POSIX host those are neither
+// case-insensitive nor backslash-aware. Windows is both.
+const sameWindowsFile = (configured, fallback, home) => {
+  const expanded = /^~[/\\]/.test(configured) ? join(home, configured.slice(2)) : configured;
+  const normalize = (value) => value.replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
+  return normalize(expanded) === normalize(fallback);
+};
+
 export function resolveUserConfig({
   env = process.env,
   home = homedir(),
@@ -69,8 +84,11 @@ export function resolveUserConfig({
   if (configured === '') return { path: fallback, ignored: null };
 
   // Nothing below can tell npm's echo from the customer's intent on win32, so
-  // there is nothing here worth inspecting on that platform.
-  if (platform === 'win32') return { path: fallback, ignored: { value: configured, reason: 'win32' } };
+  // the value is not followed there. It is only worth mentioning when it points
+  // somewhere other than where the token is going anyway.
+  if (platform === 'win32') {
+    return { path: fallback, ignored: sameWindowsFile(configured, fallback, home) ? null : { value: configured, reason: 'win32' } };
+  }
 
   // npm's parseField also expands `~\` on win32, but a win32 value never reaches
   // this line, so `~/` is the only form that can arrive here.
