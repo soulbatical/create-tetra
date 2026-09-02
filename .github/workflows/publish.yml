@@ -13,18 +13,24 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      # No registry-url on purpose, so setup-node writes no .npmrc at all.
+      # Given one, it writes `_authToken=${NODE_AUTH_TOKEN}`, and up to v6 it
+      # exported a placeholder value when that variable did not exist. npm would
+      # then send the placeholder if the OIDC exchange ever failed, turning a
+      # clear ENEEDAUTH into a 401 that reads like a broken trusted publisher.
+      # publishConfig.registry in package.json already pins the registry.
+      - uses: actions/setup-node@v7
         with:
           node-version: 24
-          registry-url: https://registry.npmjs.org
       - run: npm test
       # A prerelease claims the name under `next`; only a full release moves `latest`.
       #
       # This package publishes through npm trusted publishing (OIDC), using the
-      # id-token permission above. There is deliberately no auth token in the
-      # env below: setup-node writes an .npmrc whose _authToken expands from
-      # that variable, and defining it makes npm attempt token auth instead of
-      # OIDC. Adding it back turns a working publish into a 401.
+      # id-token permission above. There is deliberately no auth token in the env
+      # below, because `secrets.NPM_TOKEN` does not exist in this repository and
+      # is not going to. Note that keeping it would not have broken the publish:
+      # npm runs the OIDC exchange unconditionally and overwrites whatever token
+      # is configured, so the line was misleading rather than harmful.
       - run: npm publish --access public --provenance --tag "$DIST_TAG"
         env:
           DIST_TAG: ${{ github.event.release.prerelease && 'next' || 'latest' }}
