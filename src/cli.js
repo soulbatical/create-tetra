@@ -91,7 +91,7 @@ export async function runCreateTetra({
   });
   write(`Open: ${authorization.verificationUri}\n`);
   write(`Bevestigingscode: ${authorization.userCode}\n`);
-  browser(authorization.verificationUri);
+  browser(authorization.verificationUri, { write });
   write('Wachten op jouw goedkeuring in de browser...\n');
 
   let status;

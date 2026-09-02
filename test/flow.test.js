@@ -142,6 +142,30 @@ test('the browser is only opened for the approval URL the control plane gave', a
   assert.deepEqual(opened, ['https://tetrasaas.com/install/approve?request=public-id']);
 });
 
+// openBrowser reports a missing opener through the write channel it is handed.
+// Defaulting to stdout inside that function would bypass the CLI's own output,
+// so the CLI has to pass its own — otherwise the notice is untestable here and
+// unroutable everywhere else.
+test('the browser opener gets the same output channel as the rest of the run', async () => {
+  let output = '';
+  let handed;
+  await runCreateTetra({
+    argv: ['app'],
+    cwd: '/tmp',
+    version: '1.0.0',
+    client: stubClient(),
+    checkDirectory: async () => true,
+    browser: (_url, options) => { handed = options; },
+    write: (text) => { output += text; },
+    sleep: async () => {},
+    install: async (o) => ({ projectPath: o.projectPath, projectName: o.projectName }),
+  });
+
+  assert.equal(typeof handed?.write, 'function', 'the CLI must hand the opener a write channel');
+  handed.write('opener said something\n');
+  assert.match(output, /opener said something/);
+});
+
 test('a reserved prerelease still refuses before touching anything', async () => {
   let output = '';
   const client = stubClient();

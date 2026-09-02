@@ -2,7 +2,12 @@ import { spawn } from 'node:child_process';
 
 const APPROVAL_ORIGIN = 'https://tetrasaas.com';
 
-export function openBrowser(url, { platform = process.platform, spawnImpl = spawn, origin = APPROVAL_ORIGIN } = {}) {
+export function openBrowser(url, {
+  platform = process.platform,
+  spawnImpl = spawn,
+  origin = APPROVAL_ORIGIN,
+  write = (text) => process.stdout.write(text),
+} = {}) {
   const parsed = new URL(url);
   if (parsed.protocol !== 'https:' || parsed.origin !== origin) {
     throw new Error('Refusing to open an untrusted browser URL.');
@@ -17,9 +22,16 @@ export function openBrowser(url, { platform = process.platform, spawnImpl = spaw
     : [parsed.toString()];
   const child = spawnImpl(command, args, { detached: true, stdio: 'ignore', shell: false });
   // No opener exists on a headless Linux box, WSL without xdg-utils, or a bare
-  // container. Without a listener that spawn failure is an uncaught exception
-  // that kills the process — and the URL and the confirmation code have already
-  // been printed, so the customer can simply open it himself.
-  child.on?.('error', () => {});
+  // container. A spawn failure arrives as an event, not a throw, and an 'error'
+  // event without a listener is an uncaught exception that takes the process
+  // down — past `main().catch()`, which only sees rejected promises.
+  //
+  // Surviving it silently is only half the fix. The customer would watch for a
+  // browser that never appears while the CLI waits for an approval he has no
+  // idea he still has to give. The URL and the confirmation code are already on
+  // screen one line up, so point him at them.
+  child.on?.('error', () => {
+    write('Kon de browser niet automatisch openen; open de link hierboven zelf.\n');
+  });
   child.unref?.();
 }

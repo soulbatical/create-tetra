@@ -56,3 +56,44 @@ test('a missing browser opener does not take the process down', () => {
   assert.ok(errorListener, 'the child must have an error listener');
   assert.doesNotThrow(() => errorListener.handler(Object.assign(new Error('spawn ENOENT'), { code: 'ENOENT' })));
 });
+
+// Surviving the failure is not enough: the customer sees a browser that never
+// opens and has no way to know the flow is still waiting for him. The URL and
+// the confirmation code are already on screen, so say to use them.
+test('a missing browser opener tells the customer to open the link himself', () => {
+  const output = [];
+  let fail;
+  const spawnImpl = () => ({
+    on(event, handler) { if (event === 'error') fail = handler; },
+    unref() {},
+  });
+
+  openBrowser('https://tetrasaas.com/install/approve', {
+    platform: 'linux',
+    spawnImpl,
+    write: (text) => output.push(text),
+  });
+
+  assert.deepEqual(output, [], 'nothing is said while the opener may still succeed');
+  fail(Object.assign(new Error('spawn xdg-open ENOENT'), { code: 'ENOENT' }));
+
+  const notice = output.join('');
+  assert.match(notice, /browser/i, 'the notice must name what failed');
+  assert.match(notice, /zelf|hierboven/i, 'the notice must point back at the link above');
+  assert.equal(notice.endsWith('\n'), true, 'the notice is a whole line');
+});
+
+// A second failure event must not repeat the line, and the notice must not be a
+// hard dependency: called without a write channel it still must not throw.
+test('the opener notice is printed once and needs no write channel', () => {
+  let fail;
+  const spawnImpl = () => ({
+    on(event, handler) { if (event === 'error') fail = handler; },
+    unref() {},
+  });
+
+  assert.doesNotThrow(() => {
+    openBrowser('https://tetrasaas.com/install/approve', { platform: 'linux', spawnImpl });
+    fail(new Error('spawn ENOENT'));
+  });
+});
