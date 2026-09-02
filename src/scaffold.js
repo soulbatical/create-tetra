@@ -20,13 +20,19 @@ export async function directoryIsFree(path) {
   }
 }
 
-async function writeSecretFile(path, content, { write: writeImpl = writeFile, remove = rm } = {}) {
-  // The mode of an existing file is not changed by writeFile, and these carry a
-  // credential. Remove first, then create exclusively: 'wx' is O_CREAT|O_EXCL,
-  // which fails loudly on a file or a planted symlink rather than writing
-  // through one, and a fresh file does take the mode.
+// The scaffolder has already written some of these, so they are replaced rather
+// than written over: writeFile leaves the mode of an existing file alone and
+// follows a symlink. Remove first, then create exclusively — 'wx' is
+// O_CREAT|O_EXCL, which fails loudly on a file or a planted symlink rather than
+// writing through one, and a fresh file does take the mode.
+async function replaceProjectFile(path, content, { mode, write: writeImpl = writeFile, remove = rm } = {}) {
   await remove(path, { force: true });
-  await writeImpl(path, content, { mode: 0o600, flag: 'wx' });
+  await writeImpl(path, content, { mode, flag: 'wx' });
+}
+
+// For the files that carry the registry token or the licence key.
+async function writeSecretFile(path, content, options = {}) {
+  return replaceProjectFile(path, content, { ...options, mode: 0o600 });
 }
 
 // Compared as text rather than through resolve(): `platform` is a parameter, so
@@ -270,6 +276,53 @@ const spentGrant = (what, reason, retry, leftBehind = null) => [
   `Los het probleem hierboven op en draai dan: ${retry}`,
 ].join('\n');
 
+// Same problem as the project .npmrc, one directory down. The scaffolder ships a
+// ci/npmrc naming the internal registry, and railway.toml and netlify.toml point
+// NPM_CONFIG_USERCONFIG at it — Netlify installs before it runs the build
+// command, so a file is the only thing early enough. Left as shipped, it
+// authenticates the customer's build machine against a registry he cannot reach:
+// his laptop installs fine and his first deploy dies on a 401.
+//
+// It holds the ${NPM_TOKEN} placeholder rather than the token, which is exactly
+// why it is not a secret file and belongs in his repository. The mode says so.
+//
+// Not fatal. Older scaffolder versions ship no ci/ at all — hence the mkdir —
+// and by this point the grant is spent and the project exists, so a directory
+// we cannot write is no reason to throw away a working local install. Say what
+// is missing and what to put in it instead.
+async function writeCiConfig({
+  projectPath,
+  content,
+  write,
+  makeDirectory,
+  writeProjectFile,
+  removeFile,
+  authKey,
+}) {
+  const path = join(projectPath, 'ci', 'npmrc');
+  try {
+    await makeDirectory(dirname(path), { recursive: true });
+    await replaceProjectFile(path, content, {
+      mode: 0o644,
+      write: writeProjectFile,
+      remove: removeFile,
+    });
+  } catch (error) {
+    write([
+      '',
+      `${path} kon niet worden geschreven:`,
+      `  ${error.message}`,
+      '',
+      'Lokaal werkt alles; alleen een build op Railway of Netlify krijgt zonder dat',
+      'bestand een 401. Maak het zelf aan met deze twee regels:',
+      `  ${content.split('\n').filter((line) => line !== '' && !line.startsWith('#')).join('\n  ')}`,
+      '',
+      `Zet NPM_TOKEN daar als build-variabele; ${authKey} is de sleutel die hem gebruikt.`,
+      '',
+    ].join('\n'));
+  }
+}
+
 export async function installProject({
   projectPath,
   projectName,
@@ -362,6 +415,15 @@ export async function installProject({
       remove: removeFile,
     });
     await ignoreEnv(projectPath);
+    await writeCiConfig({
+      projectPath,
+      content: files.ciNpmrc,
+      write,
+      makeDirectory,
+      writeProjectFile,
+      removeFile,
+      authKey: files.authKey,
+    });
 
     // Same position as the dependency install below: the grant is spent and the
     // project is generated, so a bare throw here strands the customer with a

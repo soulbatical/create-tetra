@@ -49,11 +49,20 @@ create-tetra volgt die scheiding:
 - De `npm install` die create-tetra voor je draait wordt op datzelfde bestand
   gericht, zodat de plek waar het token staat en de plek waar npm kijkt niet uit
   elkaar kunnen lopen.
-- `<project>/.env` krijgt je licentiesleutel, en `NPM_TOKEN` voor CI-omgevingen
+- `<project>/ci/npmrc` wijst diezelfde scope naar jouw registry en zet er wel een
+  authenticatieregel bij, met `${NPM_TOKEN}` als placeholder in plaats van je
+  token. Een buildmachine heeft geen gebruikersconfiguratie en heeft die regel
+  dus nodig; `railway.toml` en `netlify.toml` wijzen `NPM_CONFIG_USERCONFIG`
+  daarheen. Netlify installeert voordat het je buildcommando draait, dus dit moet
+  een bestand in je repository zijn. In je project-`.npmrc` zou dezelfde regel
+  juist schade doen: npm slaat een niet-opgeloste `${NPM_TOKEN}` niet over maar
+  stuurt hem letterlijk mee, en dan krijgt elke ontwikkelaar die de variabele
+  niet exporteert een 401 op een verder werkende `~/.npmrc`. Committen dus, en
+  op Railway en Netlify alleen nog `NPM_TOKEN` als build-variabele zetten.
+- `<project>/.env` krijgt je licentiesleutel, en `NPM_TOKEN` voor buildmachines
   waar geen gebruikersconfiguratie bestaat. npm leest `.env` niet, dus die
-  variabele doet uit zichzelf niets: `.env` zet de `.npmrc`-regel erbij die je
-  in CI nodig hebt. Dit bestand hoort niet in git; create-tetra zet het voor je
-  in `.gitignore`.
+  variabele doet uit zichzelf niets: `ci/npmrc` is het bestand dat hem uitgeeft.
+  Dit bestand hoort niet in git; create-tetra zet het voor je in `.gitignore`.
 
 create-tetra draait de eerste `npm install` zelf, zodat je project bewezen
 installeerbaar is voordat je iets te horen krijgt.

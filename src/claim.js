@@ -219,6 +219,12 @@ export function validateClaim(value, { allowedHosts, allowInsecure, requiredScop
 // project. Splitting them the way npm intends is what makes `npm install` keep
 // working: the project file carries no secret and no ${NPM_TOKEN} placeholder
 // that npm would send literally, and the token lives where npm login puts it.
+//
+// A build machine has no user-level npmrc, so it needs a third file: one that
+// does carry the placeholder, and that only CI ever selects. That is ci/npmrc,
+// and railway.toml and netlify.toml point NPM_CONFIG_USERCONFIG at it. Netlify
+// installs before it runs the build command, which is why this has to be a file
+// in the repository rather than a line some script exports.
 export function renderProjectFiles(claim) {
   const projectNpmrc = [
     `${claim.registry.scope}:registry=${claim.registry.url}`,
@@ -228,19 +234,48 @@ export function renderProjectFiles(claim) {
 
   const userNpmrcEntry = `${claim.registry.authKey}:_authToken=${claim.registry.token}`;
 
+  // Committed, and deliberately so: there is no secret in it, only the name of
+  // the variable the build machine is expected to hold.
+  const ciNpmrc = [
+    '# npm configuration for build machines. Nothing reads this file unless',
+    '# NPM_CONFIG_USERCONFIG points at it, which is what railway.toml and',
+    '# netlify.toml do; on a developer machine it sits here inert.',
+    '#',
+    '# That indirection is the point. A build machine has no ~/.npmrc, so it needs',
+    '# the token from the NPM_TOKEN build variable — but npm does not skip an',
+    '# unresolved ${NPM_TOKEN}, it sends the literal string as the token. Putting',
+    '# this line in the project .npmrc would therefore turn a working ~/.npmrc into',
+    '# a 401 for every developer who has not exported the variable. Keeping it in a',
+    "# file only CI selects gives the build machine its credentials and leaves the",
+    "# developer's own npm alone.",
+    '#',
+    '# Set NPM_TOKEN on Railway and Netlify: the read-only registry token that',
+    '# create-tetra also wrote into .env.',
+    `${claim.registry.scope}:registry=${claim.registry.url}`,
+    `${claim.registry.authKey}:_authToken=\${NPM_TOKEN}`,
+    '',
+  ].join('\n');
+
   const env = [
     '# Written by create-tetra. Keep this file out of version control.',
     `TETRA_LICENSE_KEY=${claim.licenseKey}`,
     ...(claim.licenseVerification
       ? [`TETRA_LICENSE_PUBLIC_KEYS_JSON=${claim.licenseVerification.publicKeysJson}`]
       : []),
-    '# Only needed in CI, where there is no user-level npm config. npm never reads',
-    '# .env, so this variable does nothing on its own: add the line below to the',
-    '# npmrc your CI uses, and npm install will authenticate there too.',
-    `#   ${claim.registry.authKey}:_authToken=\${NPM_TOKEN}`,
+    '# Only needed on a build machine, which has no user-level npm config. npm',
+    '# never reads .env, so this variable does nothing on its own: ci/npmrc holds',
+    '# the line that spends it, and railway.toml and netlify.toml already select',
+    '# that file. On any other CI, set NPM_CONFIG_USERCONFIG=ci/npmrc there too.',
     `NPM_TOKEN=${claim.registry.token}`,
     '',
   ].join('\n');
 
-  return { projectNpmrc, userNpmrcEntry, env, token: claim.registry.token, authKey: claim.registry.authKey };
+  return {
+    projectNpmrc,
+    ciNpmrc,
+    userNpmrcEntry,
+    env,
+    token: claim.registry.token,
+    authKey: claim.registry.authKey,
+  };
 }
