@@ -115,7 +115,14 @@ async function waitForApproval({
   let current = authorization;
   for (let renewal = 0; ; renewal += 1) {
     let status;
-    while (now() < current.expiresAt) {
+    // The deadline is what `waitingInstructions()` printed as "I wait until
+    // X" — a promise an AI assistant is told to trust and not restart around.
+    // Bounding the wait by `current.expiresAt` alone breaks that promise
+    // whenever a later renewal's own TTL would run past it: review round 3
+    // measured an announced 00:10:00 actually stopping at 00:17:00. Clamping
+    // to whichever comes first keeps the printed deadline honest.
+    const cycleEnd = Math.min(current.expiresAt, deadline);
+    while (now() < cycleEnd) {
       await sleep(current.intervalSeconds * 1_000);
       let polled;
       try {

@@ -354,6 +354,65 @@ test('a failed claim says the approval is spent, not just that something broke',
   );
 });
 
+// Review round 3, W1: the printed deadline ("ik wacht tot <time>") was only
+// enforced *between* cycles, at the renewal decision — not inside a cycle's
+// own poll loop, which ran until `current.expiresAt` regardless of how far
+// past the deadline that was. Measured: an announced 00:10:00 actually
+// stopped at 00:17:00 when a later renewal happened to carry a longer TTL.
+// This reproduces that with realistic per-interval polling (not a single
+// poll call that jumps the clock by a whole TTL) so the loop's own repeated
+// condition check is what is actually under test.
+test('the announced deadline is honoured even when a renewal carries a longer TTL', async () => {
+  let clock = 0;
+  const now = () => clock;
+  let currentExpiry = 0;
+  const calls = [];
+  const client = {
+    calls,
+    async requestAuthorization(input) {
+      calls.push(['authorize', input]);
+      // First code: 2 minutes. The renewal (granted after that expires)
+      // comes back with a much longer TTL — the case review measured.
+      const ttlMs = calls.filter(([kind]) => kind === 'authorize').length === 1 ? 2 * 60_000 : 100 * 60_000;
+      currentExpiry = now() + ttlMs;
+      return {
+        authorizationId: 'auth-id',
+        deviceCode: 'device-secret',
+        userCode: 'ABCD-EFGH',
+        verificationUri: 'https://tetrasaas.com/install/approve?request=public-id',
+        intervalSeconds: 60,
+        expiresAt: currentExpiry,
+      };
+    },
+    async pollAuthorization() {
+      calls.push(['poll']);
+      return { status: now() >= currentExpiry ? 'expired' : 'pending' };
+    },
+  };
+
+  await assert.rejects(
+    runCreateTetra({
+      argv: ['my-app'],
+      cwd: '/tmp',
+      version: '1.0.0',
+      client,
+      checkDirectory: async () => true,
+      browser: () => {},
+      write: () => {},
+      sleep: async (ms) => { clock += ms; },
+      now,
+      maxRenewals: 1,
+      install: async () => { throw new Error('must not install'); },
+    }),
+    /verlopen/,
+  );
+
+  // Deadline = first expiresAt(2min) + maxRenewals(1) * ttl(2min) = 4 minutes.
+  // Without the fix, the second cycle's 100-minute TTL would have let this
+  // run to ~102 minutes instead.
+  assert.equal(now(), 4 * 60_000);
+});
+
 // A denial is final by design — unlike an expiry, nothing about it should be
 // retried, so a renewal budget must not turn a "no" into another prompt.
 test('a denial is never retried, even with renewals left in the budget', async () => {
