@@ -120,12 +120,19 @@ async function waitForApproval({
       let polled;
       try {
         polled = await client.pollAuthorization(current.deviceCode);
-      } catch {
-        // The client already retried this (control-plane-client.js); giving
-        // up here throws away a run that might have up to tens of minutes of
-        // budget left over a blip that outlasted a ~1s retry window. A poll
-        // is always safe to repeat — the authorization itself is untouched —
-        // so treat a failed one like 'pending' and try again next interval.
+      } catch (error) {
+        // The client already retried a transient failure once
+        // (control-plane-client.js); giving up here throws away a run that
+        // might have tens of minutes of budget left over a blip that
+        // outlasted that ~1s retry window. But not every failure is a blip:
+        // a 404 or a contract violation ("unknown authorization status",
+        // an approved status with a broken grant) is a real answer, and
+        // review round 3 measured that swallowing those too silently polled
+        // for the full renewal budget before ending in a misleading "De
+        // goedkeuring is verlopen" — never showing the actual problem. Only
+        // a failure the client itself marked transient is safe to treat
+        // like 'pending'; anything else is surfaced immediately.
+        if (!error.transient) throw error;
         continue;
       }
       if (polled.status === 'pending') continue;
@@ -216,14 +223,18 @@ export async function runCreateTetra({
     // so any failure here — including the network blip waitForApproval just
     // spent tens of minutes surviving on the poll side — ends the run. Said
     // plainly: this is not "the install failed", it is "the approval you
-    // just gave is spent", which needs a different next step, and one an AI
-    // assistant must not confuse with "restart and wait again".
+    // just gave cannot be used (again)" — which needs a different next step,
+    // and one an AI assistant must not confuse with "restart and wait again".
+    // Deliberately not claiming the grant *was* spent: a connection that
+    // never reached the control plane at all never spent anything, and this
+    // message has no way to tell the two apart.
     const reason = error instanceof Error ? error.message : String(error);
     throw new Error(
       [
         `Je goedkeuring is binnengekomen, maar het ophalen van je toegang is mislukt: ${reason}`,
-        'Die goedkeuring is daarmee verbruikt. Draai het commando opnieuw om een nieuwe aan te vragen.',
+        'Die goedkeuring kan niet opnieuw gebruikt worden. Draai het commando opnieuw om een nieuwe aan te vragen.',
       ].join('\n'),
+      { cause: error },
     );
   }
   const files = renderProjectFiles(claim);

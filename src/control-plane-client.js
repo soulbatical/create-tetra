@@ -9,8 +9,19 @@ import { validateClaim } from './claim.js';
 // handler. Measured, not assumed.
 const DEFAULT_BASE_URL = 'https://tetrasaas.com';
 
+// `transient` describes the failure, not our retry policy for it: a caller
+// that gave up retrying (because the budget ran out, or because the call was
+// marked non-retryable) still needs to know whether this looked like a blip
+// or like a real answer. waitForApproval in cli.js reads this to decide
+// whether a failed poll is safe to treat like 'pending' for up to tens of
+// minutes, or must be surfaced immediately — review round 3 measured that
+// without this bit, a 404 or a contract violation ("unknown authorization
+// status") got silently retried for the full renewal budget and ended in a
+// misleading "De goedkeuring is verlopen" instead of the real error.
 function safeApiError(status) {
-  return new Error(`Control plane request failed with HTTP ${status}.`);
+  const error = new Error(`Control plane request failed with HTTP ${status}.`);
+  error.transient = isRetryableStatus(status);
+  return error;
 }
 
 // A single 5xx or 429 does not mean the flow is broken — it measured, in
@@ -67,7 +78,10 @@ export function createControlPlaneClient({
         // A network failure (reset connection, DNS, our own 30s timeout)
         // never reached the server, so it carries the same retry question as
         // a 5xx — and the same answer for a non-retryable call: do not repeat
-        // something that may not be safe to repeat.
+        // something that may not be safe to repeat. It is always transient in
+        // nature (see the comment on safeApiError), independent of whether
+        // this call's own policy allows us to act on that.
+        error.transient = true;
         if (!retryable || attempt >= retryAttempts) throw error;
         await sleep(RETRY_BASE_DELAY_MS * 2 ** (attempt - 1));
         continue;

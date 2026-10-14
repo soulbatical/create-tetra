@@ -97,6 +97,62 @@ test('never echoes an unsafe server error code', async () => {
   });
 });
 
+// cli.js's waitForApproval reads `.transient` to decide whether a failed poll
+// is safe to treat like 'pending' (a blip worth outlasting) or must be
+// surfaced immediately (a real answer, like "this device code does not
+// exist"). Getting this bit wrong in either direction is the bug review
+// round 3 found: everything silently becoming 'pending' hid a permanent 404
+// behind "De goedkeuring is verlopen" for the full renewal budget.
+test('an exhausted 5xx/429 is marked transient — it looked retryable, just ran out of attempts', async () => {
+  for (const status of [429, 500, 503]) {
+    const client = createControlPlaneClient({
+      baseUrl: 'http://127.0.0.1:3042',
+      sleep: async () => {},
+      fetchImpl: async () => Response.json({ error: 'request_failed' }, { status }),
+    });
+    await assert.rejects(client.pollAuthorization('device'), (error) => {
+      assert.equal(error.transient, true, `status ${status} must be marked transient`);
+      return true;
+    });
+  }
+});
+
+test('a non-retryable 4xx is marked not transient — it is a real answer', async () => {
+  for (const status of [400, 404, 410]) {
+    const client = createControlPlaneClient({
+      baseUrl: 'http://127.0.0.1:3042',
+      sleep: async () => { throw new Error('must not sleep for a non-retryable status'); },
+      fetchImpl: async () => Response.json({ error: 'request_failed' }, { status }),
+    });
+    await assert.rejects(client.pollAuthorization('device'), (error) => {
+      assert.equal(error.transient, false, `status ${status} must not be marked transient`);
+      return true;
+    });
+  }
+});
+
+test('a thrown network error is marked transient regardless of whether it was retried', async () => {
+  const retryable = createControlPlaneClient({
+    baseUrl: 'http://127.0.0.1:3042',
+    sleep: async () => {},
+    fetchImpl: async () => { throw new Error('ECONNRESET'); },
+  });
+  await assert.rejects(retryable.pollAuthorization('device'), (error) => {
+    assert.equal(error.transient, true);
+    return true;
+  });
+
+  const nonRetryable = createControlPlaneClient({
+    baseUrl: 'http://127.0.0.1:3042',
+    sleep: async () => { throw new Error('must not sleep when claim is not retryable'); },
+    fetchImpl: async () => { throw new Error('ECONNRESET'); },
+  });
+  await assert.rejects(nonRetryable.claim('grant-secret'), (error) => {
+    assert.equal(error.transient, true);
+    return true;
+  });
+});
+
 test('a non-JSON error body is never echoed back to the terminal', async () => {
   const client = createControlPlaneClient({
     baseUrl: 'http://127.0.0.1:3042',

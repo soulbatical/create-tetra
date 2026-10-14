@@ -251,10 +251,16 @@ for (const ttlMinutes of [10, 15]) {
 // retry window threw the whole run away, despite tens of minutes of renewal
 // budget sitting unused. A poll is always safe to repeat, so a failure there
 // should cost nothing more than the next interval.
+function transientError(message) {
+  const error = new Error(message);
+  error.transient = true;
+  return error;
+}
+
 test('a failed poll is treated like pending, not like a reason to give up', async () => {
   const pollOutcomes = [
-    new Error('ECONNRESET'),
-    new Error('ECONNRESET'),
+    transientError('ECONNRESET'),
+    transientError('ECONNRESET'),
     { status: 'approved', installGrant: 'grant-secret' },
   ];
   const client = stubClient();
@@ -282,6 +288,42 @@ test('a failed poll is treated like pending, not like a reason to give up', asyn
   assert.equal(client.calls.filter(([kind]) => kind === 'authorize').length, 1);
 });
 
+// The counterpart to the test above: a poll failure that is NOT marked
+// transient (a 404, or a contract violation like "unknown authorization
+// status") is a real answer, not a blip. Review round 3 measured that
+// swallowing it anyway silently polled for the entire renewal budget (tens
+// of minutes) and then reported the generic "De goedkeuring is verlopen" —
+// never showing the actual problem. It must surface on the first poll.
+test('a non-transient poll failure surfaces immediately, not after the whole renewal budget', async () => {
+  const client = stubClient();
+  let polls = 0;
+  client.pollAuthorization = async (deviceCode) => {
+    polls += 1;
+    client.calls.push(['poll', deviceCode]);
+    const error = new Error('Control plane returned an unknown authorization status.');
+    error.transient = false;
+    throw error;
+  };
+
+  await assert.rejects(
+    runCreateTetra({
+      argv: ['my-app'],
+      cwd: '/tmp',
+      version: '1.0.0',
+      client,
+      checkDirectory: async () => true,
+      browser: () => {},
+      write: () => {},
+      sleep: async () => {},
+      install: async () => { throw new Error('must not install'); },
+    }),
+    /unknown authorization status/,
+  );
+
+  assert.equal(polls, 1);
+  assert.equal(client.calls.filter(([kind]) => kind === 'authorize').length, 1);
+});
+
 // claim() is never retried because it spends a single-use grant, so any
 // failure there ends the run — but the customer (or the AI assistant reading
 // this output) needs to be told that the approval is now spent and the fix
@@ -303,9 +345,10 @@ test('a failed claim says the approval is spent, not just that something broke',
       install: async () => { throw new Error('must not install'); },
     }),
     (error) => {
-      assert.match(error.message, /verbruikt/);
+      assert.match(error.message, /kan niet opnieuw gebruikt worden/);
       assert.match(error.message, /opnieuw/);
       assert.match(error.message, /ECONNRESET/);
+      assert.equal(error.cause?.message, 'ECONNRESET');
       return true;
     },
   );
