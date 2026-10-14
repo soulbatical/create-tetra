@@ -117,7 +117,17 @@ async function waitForApproval({
     let status;
     while (now() < current.expiresAt) {
       await sleep(current.intervalSeconds * 1_000);
-      const polled = await client.pollAuthorization(current.deviceCode);
+      let polled;
+      try {
+        polled = await client.pollAuthorization(current.deviceCode);
+      } catch {
+        // The client already retried this (control-plane-client.js); giving
+        // up here throws away a run that might have up to tens of minutes of
+        // budget left over a blip that outlasted a ~1s retry window. A poll
+        // is always safe to repeat — the authorization itself is untouched —
+        // so treat a failed one like 'pending' and try again next interval.
+        continue;
+      }
       if (polled.status === 'pending') continue;
       status = polled;
       break;
@@ -198,7 +208,24 @@ export async function runCreateTetra({
   });
 
   write('Goedgekeurd.\n');
-  const claim = await client.claim(status.installGrant);
+  let claim;
+  try {
+    claim = await client.claim(status.installGrant);
+  } catch (error) {
+    // claim() is deliberately never retried (it spends a single-use grant),
+    // so any failure here — including the network blip waitForApproval just
+    // spent tens of minutes surviving on the poll side — ends the run. Said
+    // plainly: this is not "the install failed", it is "the approval you
+    // just gave is spent", which needs a different next step, and one an AI
+    // assistant must not confuse with "restart and wait again".
+    const reason = error instanceof Error ? error.message : String(error);
+    throw new Error(
+      [
+        `Je goedkeuring is binnengekomen, maar het ophalen van je toegang is mislukt: ${reason}`,
+        'Die goedkeuring is daarmee verbruikt. Draai het commando opnieuw om een nieuwe aan te vragen.',
+      ].join('\n'),
+    );
+  }
   const files = renderProjectFiles(claim);
 
   const result = await install({

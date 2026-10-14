@@ -247,6 +247,70 @@ for (const ttlMinutes of [10, 15]) {
   });
 }
 
+// Review round 2 measured that a poll blip outlasting the client's own ~1s
+// retry window threw the whole run away, despite tens of minutes of renewal
+// budget sitting unused. A poll is always safe to repeat, so a failure there
+// should cost nothing more than the next interval.
+test('a failed poll is treated like pending, not like a reason to give up', async () => {
+  const pollOutcomes = [
+    new Error('ECONNRESET'),
+    new Error('ECONNRESET'),
+    { status: 'approved', installGrant: 'grant-secret' },
+  ];
+  const client = stubClient();
+  client.pollAuthorization = async (deviceCode) => {
+    client.calls.push(['poll', deviceCode]);
+    const next = pollOutcomes.shift();
+    if (next instanceof Error) throw next;
+    return next;
+  };
+
+  const result = await runCreateTetra({
+    argv: ['horeca-crm'],
+    cwd: '/tmp',
+    version: '1.0.0',
+    client,
+    checkDirectory: async () => true,
+    browser: () => {},
+    write: () => {},
+    sleep: async () => {},
+    install: async (options) => ({ projectPath: options.projectPath, projectName: options.projectName }),
+  });
+
+  assert.equal(result.kind, 'installed');
+  assert.equal(client.calls.filter(([kind]) => kind === 'poll').length, 3);
+  assert.equal(client.calls.filter(([kind]) => kind === 'authorize').length, 1);
+});
+
+// claim() is never retried because it spends a single-use grant, so any
+// failure there ends the run — but the customer (or the AI assistant reading
+// this output) needs to be told that the approval is now spent and the fix
+// is a fresh run, not a restart-and-wait.
+test('a failed claim says the approval is spent, not just that something broke', async () => {
+  const client = stubClient();
+  client.claim = async () => { throw new Error('ECONNRESET'); };
+
+  await assert.rejects(
+    runCreateTetra({
+      argv: ['my-app'],
+      cwd: '/tmp',
+      version: '1.0.0',
+      client,
+      checkDirectory: async () => true,
+      browser: () => {},
+      write: () => {},
+      sleep: async () => {},
+      install: async () => { throw new Error('must not install'); },
+    }),
+    (error) => {
+      assert.match(error.message, /verbruikt/);
+      assert.match(error.message, /opnieuw/);
+      assert.match(error.message, /ECONNRESET/);
+      return true;
+    },
+  );
+});
+
 // A denial is final by design — unlike an expiry, nothing about it should be
 // retried, so a renewal budget must not turn a "no" into another prompt.
 test('a denial is never retried, even with renewals left in the budget', async () => {
