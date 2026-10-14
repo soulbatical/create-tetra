@@ -49,8 +49,15 @@ const PROJECT_NAME = /^[a-z][a-z0-9-]*$/;
 // asks for a new one automatically instead of making the customer re-run the
 // command. Still bounded: an authorization nobody is ever going to approve
 // must not poll forever.
+//
+// Both numbers have to be reachable together, or one of them is decoration.
+// At the control plane's actual 10-minute TTL, 4 renewals need up to 5 × 10
+// minutes of worst-case waiting to all happen — so the time budget is sized
+// for that, not picked independently. A shorter budget would make "4
+// renewals" a number nothing ever reaches, which is exactly what review
+// caught here with the previous 30-minute figure.
 const DEFAULT_MAX_RENEWALS = 4;
-const DEFAULT_RENEWAL_BUDGET_MS = 30 * 60_000;
+const DEFAULT_RENEWAL_BUDGET_MS = 50 * 60_000;
 
 export function projectNameProblem(name) {
   if (PROJECT_NAME.test(name)) return null;

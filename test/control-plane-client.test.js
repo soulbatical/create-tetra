@@ -184,3 +184,56 @@ test('a non-retryable 400 fails on the first attempt', async () => {
   await assert.rejects(client.pollAuthorization('device'), /HTTP 400/);
   assert.equal(calls, 1);
 });
+
+// A network failure never reached the server, so it carries the same retry
+// question as a 5xx for a call that is safe to repeat.
+test('a thrown network error is retried on a retryable call', async () => {
+  let calls = 0;
+  const client = createControlPlaneClient({
+    baseUrl: 'http://127.0.0.1:3042',
+    sleep: async () => {},
+    fetchImpl: async () => {
+      calls += 1;
+      if (calls === 1) throw new Error('ECONNRESET');
+      return Response.json({ status: 'pending' });
+    },
+  });
+
+  const status = await client.pollAuthorization('device');
+  assert.deepEqual(status, { status: 'pending' });
+  assert.equal(calls, 2);
+});
+
+// The grant is spent exactly once. A claim is sent as a bearer and its
+// result is never logged — and it must never be sent a second time just
+// because the first response (success or failure) did not come back cleanly,
+// since the control plane may have already spent it.
+test('a 500 on claim is never retried — a grant must not be spent twice', async () => {
+  let calls = 0;
+  const client = createControlPlaneClient({
+    baseUrl: 'http://127.0.0.1:3042',
+    sleep: async () => { throw new Error('must not sleep when claim is not retryable'); },
+    fetchImpl: async () => {
+      calls += 1;
+      return Response.json({ error: 'request_failed' }, { status: 500 });
+    },
+  });
+
+  await assert.rejects(client.claim('grant-secret'), /HTTP 500/);
+  assert.equal(calls, 1);
+});
+
+test('a dropped connection on claim is never retried either', async () => {
+  let calls = 0;
+  const client = createControlPlaneClient({
+    baseUrl: 'http://127.0.0.1:3042',
+    sleep: async () => { throw new Error('must not sleep when claim is not retryable'); },
+    fetchImpl: async () => {
+      calls += 1;
+      throw new Error('ECONNRESET');
+    },
+  });
+
+  await assert.rejects(client.claim('grant-secret'), /ECONNRESET/);
+  assert.equal(calls, 1);
+});

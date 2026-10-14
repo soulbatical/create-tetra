@@ -186,6 +186,60 @@ test('renewals run out, and the final failure still says verlopen', async () => 
   assert.equal(client.calls.some(([kind]) => kind === 'claim'), false);
 });
 
+// Review (soulbatical/create-tetra#6) measured that the previous 30-minute
+// budget made DEFAULT_MAX_RENEWALS=4 unreachable at the control plane's real
+// 10-minute TTL — the time budget always ran out first, so the test suite's
+// own 60-second-TTL stub was the only place "4 renewals" ever happened. This
+// locks the two bounds together at a realistic TTL instead.
+test('the renewal budget actually allows all configured renewals at the real TTL', async () => {
+  const TTL_MS = 10 * 60_000;
+  let clock = 0;
+  const now = () => clock;
+  const calls = [];
+  const client = {
+    calls,
+    async requestAuthorization(input) {
+      calls.push(['authorize', input]);
+      return {
+        authorizationId: 'auth-id',
+        deviceCode: 'device-secret',
+        userCode: 'ABCD-EFGH',
+        verificationUri: 'https://tetrasaas.com/install/approve?request=public-id',
+        intervalSeconds: 2,
+        expiresAt: now() + TTL_MS,
+      };
+    },
+    async pollAuthorization() {
+      calls.push(['poll']);
+      // The TTL fully elapses with nobody answering, which is the scenario
+      // the renewal budget exists for.
+      clock += TTL_MS;
+      return { status: 'expired' };
+    },
+  };
+
+  await assert.rejects(
+    runCreateTetra({
+      argv: ['my-app'],
+      cwd: '/tmp',
+      version: '1.0.0',
+      client,
+      checkDirectory: async () => true,
+      browser: () => {},
+      write: () => {},
+      sleep: async () => {},
+      now,
+      install: async () => { throw new Error('must not install'); },
+    }),
+    /verlopen/,
+  );
+
+  // 1 initial authorization + DEFAULT_MAX_RENEWALS(4) renewals, all inside
+  // the default budget — the count bound is what finally stops it, not the
+  // clock cutting it short first.
+  assert.equal(calls.filter(([kind]) => kind === 'authorize').length, 5);
+});
+
 // A denial is final by design — unlike an expiry, nothing about it should be
 // retried, so a renewal budget must not turn a "no" into another prompt.
 test('a denial is never retried, even with renewals left in the budget', async () => {

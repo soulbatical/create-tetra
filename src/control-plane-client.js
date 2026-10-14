@@ -40,18 +40,38 @@ export function createControlPlaneClient({
   }
   if (typeof fetchImpl !== 'function') throw new Error('This Node runtime does not provide fetch.');
 
-  async function request(path, body, { bearer } = {}) {
+  // `retryable: false` is what keeps this from quietly turning a single-use
+  // call into a multi-use one. A grant can be spent at most once: if the
+  // control plane processed a claim and only the *response* was lost to a
+  // network blip, retrying resends a now-dead grant and turns a successful
+  // install into a confusing 401 — or, if the server side ever has a gap,
+  // mints a second set of credentials for one approval. Review caught this
+  // on the first pass (soulbatical/create-tetra#6): the retry had been added
+  // to the one layer every call shares, which is exactly the layer that
+  // cannot tell a safe-to-repeat request from one that was not.
+  async function request(path, body, { bearer, retryable = true } = {}) {
     const headers = { 'content-type': 'application/json', accept: 'application/json' };
     if (bearer) headers.authorization = `Bearer ${bearer}`;
 
     for (let attempt = 1; ; attempt += 1) {
-      const response = await fetchImpl(new URL(path, origin), {
-        method: 'POST',
-        headers,
-        body: JSON.stringify(body),
-        redirect: 'error',
-        signal: AbortSignal.timeout(30_000),
-      });
+      let response;
+      try {
+        response = await fetchImpl(new URL(path, origin), {
+          method: 'POST',
+          headers,
+          body: JSON.stringify(body),
+          redirect: 'error',
+          signal: AbortSignal.timeout(30_000),
+        });
+      } catch (error) {
+        // A network failure (reset connection, DNS, our own 30s timeout)
+        // never reached the server, so it carries the same retry question as
+        // a 5xx — and the same answer for a non-retryable call: do not repeat
+        // something that may not be safe to repeat.
+        if (!retryable || attempt >= retryAttempts) throw error;
+        await sleep(RETRY_BASE_DELAY_MS * 2 ** (attempt - 1));
+        continue;
+      }
 
       let payload = null;
       try {
@@ -61,7 +81,7 @@ export function createControlPlaneClient({
       }
       if (response.ok) return payload;
 
-      if (!isRetryableStatus(response.status) || attempt >= retryAttempts) {
+      if (!retryable || !isRetryableStatus(response.status) || attempt >= retryAttempts) {
         throw safeApiError(response.status);
       }
       await sleep(RETRY_BASE_DELAY_MS * 2 ** (attempt - 1));
@@ -80,9 +100,13 @@ export function createControlPlaneClient({
       );
     },
     // The grant is spent here: it is sent as a bearer and is single-use, so this
-    // call happens exactly once and its result is never logged.
+    // call happens exactly once and its result is never logged. retryable:
+    // false for the same reason — a lost response must not become a second
+    // attempt to spend a grant that may already be gone.
     async claim(installGrant) {
-      return validateClaim(await request('/api/tetra/onboarding/claim', {}, { bearer: installGrant }));
+      return validateClaim(
+        await request('/api/tetra/onboarding/claim', {}, { bearer: installGrant, retryable: false }),
+      );
     },
   };
 }
