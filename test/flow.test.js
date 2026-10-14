@@ -79,6 +79,8 @@ test('approval leads to a real project, and no secret is ever printed', async ()
     assert.equal(output.includes(secret), false, `${secret} leaked to the terminal`);
   }
   assert.match(output, /Bevestigingscode: ABCD-EFGH/);
+  assert.match(output, /Instructie voor AI-assistenten/);
+  assert.match(output, /herstart dit commando niet/);
 });
 
 test('a denied approval claims nothing and installs nothing', async () => {
@@ -104,7 +106,7 @@ test('a denied approval claims nothing and installs nothing', async () => {
   assert.equal(client.calls.some(([kind]) => kind === 'claim'), false);
 });
 
-test('an expired approval never reaches the claim', async () => {
+test('an expired approval with no renewals left never reaches the claim', async () => {
   const client = stubClient({ pollStatuses: [{ status: 'expired' }] });
 
   await assert.rejects(
@@ -118,11 +120,94 @@ test('an expired approval never reaches the claim', async () => {
       write: () => {},
       sleep: async () => {},
       install: async () => {},
+      maxRenewals: 0,
     }),
     /verlopen/,
   );
 
   assert.equal(client.calls.some(([kind]) => kind === 'claim'), false);
+});
+
+// The TTL (10 minutes) is shorter than the email round trip a human actually
+// needs, which is exactly why the old hard stop on 'expired' was the loop
+// Albert kept hitting: a renewal must pick up with a fresh code and still
+// finish the install when the renewal itself gets approved.
+test('an expired code is renewed automatically, and a later approval still installs', async () => {
+  const client = stubClient({
+    pollStatuses: [{ status: 'expired' }, { status: 'approved', installGrant: 'grant-secret' }],
+  });
+  const installed = [];
+
+  const result = await runCreateTetra({
+    argv: ['horeca-crm'],
+    cwd: '/tmp',
+    version: '1.0.0',
+    client,
+    checkDirectory: async () => true,
+    browser: () => {},
+    write: () => {},
+    sleep: async () => {},
+    install: async (options) => {
+      installed.push(options);
+      return { projectPath: options.projectPath, projectName: options.projectName };
+    },
+  });
+
+  assert.equal(result.kind, 'installed');
+  assert.equal(installed.length, 1);
+  assert.equal(client.calls.filter(([kind]) => kind === 'authorize').length, 2);
+  assert.equal(client.calls.filter(([kind]) => kind === 'poll').length, 2);
+});
+
+// Renewing has to stop eventually: an authorization nobody is ever going to
+// approve must not poll the control plane forever.
+test('renewals run out, and the final failure still says verlopen', async () => {
+  const client = stubClient({
+    pollStatuses: [{ status: 'expired' }, { status: 'expired' }, { status: 'expired' }],
+  });
+
+  await assert.rejects(
+    runCreateTetra({
+      argv: ['my-app'],
+      cwd: '/tmp',
+      version: '1.0.0',
+      client,
+      checkDirectory: async () => true,
+      browser: () => {},
+      write: () => {},
+      sleep: async () => {},
+      install: async () => { throw new Error('must not install'); },
+      maxRenewals: 2,
+    }),
+    /verlopen/,
+  );
+
+  assert.equal(client.calls.filter(([kind]) => kind === 'authorize').length, 3);
+  assert.equal(client.calls.some(([kind]) => kind === 'claim'), false);
+});
+
+// A denial is final by design — unlike an expiry, nothing about it should be
+// retried, so a renewal budget must not turn a "no" into another prompt.
+test('a denial is never retried, even with renewals left in the budget', async () => {
+  const client = stubClient({ pollStatuses: [{ status: 'denied' }] });
+
+  await assert.rejects(
+    runCreateTetra({
+      argv: ['my-app'],
+      cwd: '/tmp',
+      version: '1.0.0',
+      client,
+      checkDirectory: async () => true,
+      browser: () => {},
+      write: () => {},
+      sleep: async () => {},
+      install: async () => { throw new Error('must not install'); },
+      maxRenewals: 4,
+    }),
+    /geweigerd/,
+  );
+
+  assert.equal(client.calls.filter(([kind]) => kind === 'authorize').length, 1);
 });
 
 test('the browser is only opened for the approval URL the control plane gave', async () => {

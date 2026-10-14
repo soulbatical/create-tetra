@@ -86,6 +86,7 @@ test('never echoes an unsafe server error code', async () => {
   const reflected = 'token-secret-with-dashes';
   const client = createControlPlaneClient({
     baseUrl: 'http://127.0.0.1:3042',
+    sleep: async () => {},
     fetchImpl: async () => Response.json({ code: reflected }, { status: 500 }),
   });
 
@@ -99,6 +100,7 @@ test('never echoes an unsafe server error code', async () => {
 test('a non-JSON error body is never echoed back to the terminal', async () => {
   const client = createControlPlaneClient({
     baseUrl: 'http://127.0.0.1:3042',
+    sleep: async () => {},
     fetchImpl: async () => new Response('<html>token=leaked-secret</html>', {
       status: 502,
       headers: { 'content-type': 'text/html' },
@@ -114,4 +116,71 @@ test('a non-JSON error body is never echoed back to the terminal', async () => {
 
 test('a plain-HTTP control plane outside localhost is refused', () => {
   assert.throws(() => createControlPlaneClient({ baseUrl: 'http://evil.example' }), /must use HTTPS/);
+});
+
+test('a transient 500 is retried and the next attempt is used', async () => {
+  let calls = 0;
+  const sleeps = [];
+  const client = createControlPlaneClient({
+    baseUrl: 'http://127.0.0.1:3042',
+    sleep: async (ms) => { sleeps.push(ms); },
+    fetchImpl: async () => {
+      calls += 1;
+      if (calls === 1) return Response.json({ error: 'request_failed' }, { status: 500 });
+      return Response.json({ status: 'pending' });
+    },
+  });
+
+  const status = await client.pollAuthorization('device');
+  assert.deepEqual(status, { status: 'pending' });
+  assert.equal(calls, 2);
+  assert.deepEqual(sleeps, [300]);
+});
+
+test('a 429 is retried the same way as a 500', async () => {
+  let calls = 0;
+  const client = createControlPlaneClient({
+    baseUrl: 'http://127.0.0.1:3042',
+    sleep: async () => {},
+    fetchImpl: async () => {
+      calls += 1;
+      if (calls === 1) return Response.json({ error: 'request_failed' }, { status: 429 });
+      return Response.json({ status: 'pending' });
+    },
+  });
+
+  await client.pollAuthorization('device');
+  assert.equal(calls, 2);
+});
+
+test('retries stop once the attempt budget is spent, and back off exponentially', async () => {
+  let calls = 0;
+  const sleeps = [];
+  const client = createControlPlaneClient({
+    baseUrl: 'http://127.0.0.1:3042',
+    sleep: async (ms) => { sleeps.push(ms); },
+    fetchImpl: async () => {
+      calls += 1;
+      return Response.json({ error: 'request_failed' }, { status: 500 });
+    },
+  });
+
+  await assert.rejects(client.pollAuthorization('device'), /HTTP 500/);
+  assert.equal(calls, 3);
+  assert.deepEqual(sleeps, [300, 600]);
+});
+
+test('a non-retryable 400 fails on the first attempt', async () => {
+  let calls = 0;
+  const client = createControlPlaneClient({
+    baseUrl: 'http://127.0.0.1:3042',
+    sleep: async () => { throw new Error('must not sleep for a 400'); },
+    fetchImpl: async () => {
+      calls += 1;
+      return Response.json({ error: 'request_failed' }, { status: 400 });
+    },
+  });
+
+  await assert.rejects(client.pollAuthorization('device'), /HTTP 400/);
+  assert.equal(calls, 1);
 });

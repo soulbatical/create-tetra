@@ -13,10 +13,26 @@ function safeApiError(status) {
   return new Error(`Control plane request failed with HTTP ${status}.`);
 }
 
+// A single 5xx or 429 does not mean the flow is broken — it measured, in
+// production, as a transient blip the very next call recovered from. Without
+// a retry here that one blip was indistinguishable from a dead control plane,
+// and create-tetra threw the customer's whole run away over it. Three
+// attempts with a short exponential backoff absorbs that without masking a
+// control plane that is actually down: by the third failure in under two
+// seconds, it is.
+const DEFAULT_RETRY_ATTEMPTS = 3;
+const RETRY_BASE_DELAY_MS = 300;
+
+function isRetryableStatus(status) {
+  return status === 429 || status >= 500;
+}
+
 export function createControlPlaneClient({
   baseUrl = DEFAULT_BASE_URL,
   approvalOrigin = DEFAULT_BASE_URL,
   fetchImpl = globalThis.fetch,
+  sleep = (milliseconds) => new Promise((resolveSleep) => setTimeout(resolveSleep, milliseconds)),
+  retryAttempts = DEFAULT_RETRY_ATTEMPTS,
 } = {}) {
   const origin = new URL(baseUrl);
   if (origin.protocol !== 'https:' && origin.hostname !== '127.0.0.1' && origin.hostname !== 'localhost') {
@@ -28,22 +44,28 @@ export function createControlPlaneClient({
     const headers = { 'content-type': 'application/json', accept: 'application/json' };
     if (bearer) headers.authorization = `Bearer ${bearer}`;
 
-    const response = await fetchImpl(new URL(path, origin), {
-      method: 'POST',
-      headers,
-      body: JSON.stringify(body),
-      redirect: 'error',
-      signal: AbortSignal.timeout(30_000),
-    });
+    for (let attempt = 1; ; attempt += 1) {
+      const response = await fetchImpl(new URL(path, origin), {
+        method: 'POST',
+        headers,
+        body: JSON.stringify(body),
+        redirect: 'error',
+        signal: AbortSignal.timeout(30_000),
+      });
 
-    let payload = null;
-    try {
-      payload = await response.json();
-    } catch {
-      // A malformed body is reported without echoing it; it may contain secrets.
+      let payload = null;
+      try {
+        payload = await response.json();
+      } catch {
+        // A malformed body is reported without echoing it; it may contain secrets.
+      }
+      if (response.ok) return payload;
+
+      if (!isRetryableStatus(response.status) || attempt >= retryAttempts) {
+        throw safeApiError(response.status);
+      }
+      await sleep(RETRY_BASE_DELAY_MS * 2 ** (attempt - 1));
     }
-    if (!response.ok) throw safeApiError(response.status);
-    return payload;
   }
 
   return {
