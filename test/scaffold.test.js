@@ -1,8 +1,16 @@
 import assert from 'node:assert/strict';
-import { sep } from 'node:path';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join, sep } from 'node:path';
 import test from 'node:test';
 
-import { ensureEnvIsIgnored, formatNextSteps, installProject, storeRegistryCredential } from '../src/scaffold.js';
+import {
+  directoryIsFree,
+  ensureEnvIsIgnored,
+  formatNextSteps,
+  installProject,
+  storeRegistryCredential,
+} from '../src/scaffold.js';
 
 const AUTH_KEY = '//gitlab.example/npm/';
 
@@ -668,4 +676,44 @@ test('the deploy advice is withheld when the install did not finish', () => {
   );
 
   assert.equal(message, '');
+});
+
+// A customer who followed the starter-files instructions has README.md,
+// CLAUDE.md/AGENTS.md and a .claude/ directory in the target before
+// create-tetra ever runs. Refusing on those specific, known files forced a
+// move-out-and-back dance that taught people to shuffle files instead of
+// trusting the tool.
+test('directoryIsFree', async (t) => {
+  const dir = await mkdtemp(join(tmpdir(), 'create-tetra-dir-free-'));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+
+  await t.test('a directory that does not exist yet is free', async () => {
+    assert.equal(await directoryIsFree(join(dir, 'does-not-exist')), true);
+  });
+
+  await t.test('a truly empty directory is free', async () => {
+    const target = join(dir, 'empty');
+    await mkdir(target);
+    assert.equal(await directoryIsFree(target), true);
+  });
+
+  await t.test('only the known starter-files entries is still free', async () => {
+    const target = join(dir, 'starter-files');
+    await mkdir(target);
+    await writeFile(join(target, 'README.md'), '# demo');
+    await writeFile(join(target, 'CLAUDE.md'), 'instructions');
+    await writeFile(join(target, 'AGENTS.md'), 'instructions');
+    await writeFile(join(target, '.gitignore'), 'node_modules\n');
+    await mkdir(join(target, '.claude'));
+    await mkdir(join(target, '.git'));
+    assert.equal(await directoryIsFree(target), true);
+  });
+
+  await t.test('any other file still makes the directory in use', async () => {
+    const target = join(dir, 'has-real-content');
+    await mkdir(target);
+    await writeFile(join(target, 'README.md'), '# demo');
+    await writeFile(join(target, 'package.json'), '{}');
+    assert.equal(await directoryIsFree(target), false);
+  });
 });

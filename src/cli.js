@@ -39,6 +39,34 @@ eigen registry-toegang en licentie; je hoeft zelf geen token te regelen.
 // instead of a dead end.
 const PROJECT_NAME = /^[a-z][a-z0-9-]*$/;
 
+// A code outlives the TTL the control plane put on it (10 minutes, but its
+// own contract allows up to 15 — see contracts.js), not the email round trip
+// a human actually needs: open the link, type an address, open the inbox,
+// click the magic link. Measured in training on 2026-10-13, that round trip
+// routinely ran past the TTL, and the CLI's only answer was to throw the
+// whole run away — the loop Albert kept hitting. Renewing is cheap for the
+// control plane (it is just a fresh `create()`) and invisible to someone
+// still mid-roundtrip when their old code dies, so this asks for a new one
+// automatically instead of making the customer re-run the command. Still
+// bounded: an authorization nobody is ever going to approve must not poll
+// forever.
+//
+// Review on soulbatical/create-tetra#6 measured that a fixed time budget and
+// a fixed renewal count drift apart depending on which TTL the control plane
+// happens to issue: a budget sized for a 10-minute TTL makes the count bound
+// unreachable at 10, and dead again if the server ever issues the full
+// 15 minutes the contract allows. The deadline is derived from the TTL the
+// first authorization actually came back with instead of a separate
+// constant, so the two bounds cannot diverge by construction — see
+// `deadlineFor` below.
+const DEFAULT_MAX_RENEWALS = 4;
+
+/** `maxRenewals` full-TTL cycles from the moment the first code was issued. */
+function deadlineFor(authorization, maxRenewals, now) {
+  const ttlMs = authorization.expiresAt - now();
+  return authorization.expiresAt + maxRenewals * ttlMs;
+}
+
 export function projectNameProblem(name) {
   if (PROJECT_NAME.test(name)) return null;
   return `De projectnaam "${name}" kan niet: gebruik kleine letters, cijfers en streepjes, beginnend met een letter (bijvoorbeeld my-app).`;
@@ -53,6 +81,92 @@ function parseArgs(argv, cwd) {
   return { projectPath: resolve(cwd, argv[0] ?? '.'), targets: ['local'] };
 }
 
+// One explicit line for whatever is reading this output, human or not: the
+// wait is intentional, bounded, and self-healing, so there is nothing useful
+// to do by killing and restarting the process. An AI agent that does not read
+// this and retries the whole command instead burns a fresh approval attempt
+// for nothing — exactly the loop this file exists to stop.
+function waitingInstructions(deadline) {
+  return [
+    'Instructie voor AI-assistenten: open de link hierboven zelf (of laat een mens dat',
+    'doen) en bevestig daar de installatie. Dit proces wacht automatisch en vraagt zelf',
+    `een nieuwe code aan als de huidige verloopt. Ik wacht tot ${new Date(deadline).toISOString()};`,
+    'herstart dit commando niet in de tussentijd.',
+    '',
+  ].join('\n');
+}
+
+// Polls one authorization until it resolves, and — unlike a single poll loop
+// — keeps going across an expiry by asking the control plane for a fresh one.
+// `request` is the exact payload the first authorization was created from, so
+// a renewal asks for the same project and targets, not whatever the customer
+// might be standing in front of by then.
+async function waitForApproval({
+  client,
+  request,
+  authorization,
+  browser,
+  sleep,
+  now,
+  write,
+  maxRenewals,
+  deadline,
+}) {
+  let current = authorization;
+  for (let renewal = 0; ; renewal += 1) {
+    let status;
+    // The deadline is what `waitingInstructions()` printed as "I wait until
+    // X" — a promise an AI assistant is told to trust and not restart around.
+    // Bounding the wait by `current.expiresAt` alone breaks that promise
+    // whenever a later renewal's own TTL would run past it: review round 3
+    // measured an announced 00:10:00 actually stopping at 00:17:00. Clamping
+    // to whichever comes first keeps the printed deadline honest.
+    const cycleEnd = Math.min(current.expiresAt, deadline);
+    while (now() < cycleEnd) {
+      await sleep(current.intervalSeconds * 1_000);
+      let polled;
+      try {
+        polled = await client.pollAuthorization(current.deviceCode);
+      } catch (error) {
+        // The client already retried a transient failure once
+        // (control-plane-client.js); giving up here throws away a run that
+        // might have tens of minutes of budget left over a blip that
+        // outlasted that ~1s retry window. But not every failure is a blip:
+        // a 404 or a contract violation ("unknown authorization status",
+        // an approved status with a broken grant) is a real answer, and
+        // review round 3 measured that swallowing those too silently polled
+        // for the full renewal budget before ending in a misleading "De
+        // goedkeuring is verlopen" — never showing the actual problem. Only
+        // a failure the client itself marked transient is safe to treat
+        // like 'pending'; anything else is surfaced immediately.
+        if (!error.transient) throw error;
+        continue;
+      }
+      if (polled.status === 'pending') continue;
+      status = polled;
+      break;
+    }
+
+    if (status?.status === 'denied') throw new Error('De installatie is in de browser geweigerd.');
+    if (status?.status === 'approved') return { authorization: current, status };
+
+    // Anything else — expired, or the clock ran out without an answer — is a
+    // code nobody approved in time. Try again if the budget allows it.
+    if (renewal >= maxRenewals || now() >= deadline) throw new Error('De goedkeuring is verlopen.');
+
+    current = await client.requestAuthorization(request);
+    write(
+      [
+        `Deze code is verlopen. Nieuwe goedkeuring aanvragen (poging ${renewal + 2}/${maxRenewals + 1})...`,
+        `Open: ${current.verificationUri}`,
+        `Bevestigingscode: ${current.userCode}`,
+        '',
+      ].join('\n'),
+    );
+    browser(current.verificationUri, { write });
+  }
+}
+
 export async function runCreateTetra({
   argv = process.argv.slice(2),
   cwd = process.cwd(),
@@ -64,6 +178,7 @@ export async function runCreateTetra({
   version = VERSION,
   install = installProject,
   checkDirectory = directoryIsFree,
+  maxRenewals = DEFAULT_MAX_RENEWALS,
 } = {}) {
   const parsed = parseArgs(argv, cwd);
   if (parsed.help) { write(HELP); return { kind: 'help' }; }
@@ -83,30 +198,52 @@ export async function runCreateTetra({
     throw new Error(directoryInUse(parsed.projectPath));
   }
 
+  const authorizationRequest = { action: 'install', project: { name: projectName }, targets: parsed.targets };
+
   write('Goedkeuring aanvragen...\n');
-  const authorization = await client.requestAuthorization({
-    action: 'install',
-    project: { name: projectName },
-    targets: parsed.targets,
-  });
+  const authorization = await client.requestAuthorization(authorizationRequest);
+  const deadline = deadlineFor(authorization, maxRenewals, now);
   write(`Open: ${authorization.verificationUri}\n`);
   write(`Bevestigingscode: ${authorization.userCode}\n`);
   browser(authorization.verificationUri, { write });
+  write(waitingInstructions(deadline));
   write('Wachten op jouw goedkeuring in de browser...\n');
 
-  let status;
-  while (now() < authorization.expiresAt) {
-    await sleep(authorization.intervalSeconds * 1_000);
-    status = await client.pollAuthorization(authorization.deviceCode);
-    if (status.status === 'pending') continue;
-    if (status.status === 'denied') throw new Error('De installatie is in de browser geweigerd.');
-    if (status.status === 'expired') throw new Error('De goedkeuring is verlopen.');
-    break;
-  }
-  if (!status || status.status !== 'approved') throw new Error('De goedkeuring is verlopen.');
+  const { status } = await waitForApproval({
+    client,
+    request: authorizationRequest,
+    authorization,
+    browser,
+    sleep,
+    now,
+    write,
+    maxRenewals,
+    deadline,
+  });
 
   write('Goedgekeurd.\n');
-  const claim = await client.claim(status.installGrant);
+  let claim;
+  try {
+    claim = await client.claim(status.installGrant);
+  } catch (error) {
+    // claim() is deliberately never retried (it spends a single-use grant),
+    // so any failure here — including the network blip waitForApproval just
+    // spent tens of minutes surviving on the poll side — ends the run. Said
+    // plainly: this is not "the install failed", it is "the approval you
+    // just gave cannot be used (again)" — which needs a different next step,
+    // and one an AI assistant must not confuse with "restart and wait again".
+    // Deliberately not claiming the grant *was* spent: a connection that
+    // never reached the control plane at all never spent anything, and this
+    // message has no way to tell the two apart.
+    const reason = error instanceof Error ? error.message : String(error);
+    throw new Error(
+      [
+        `Je goedkeuring is binnengekomen, maar het ophalen van je toegang is mislukt: ${reason}`,
+        'Die goedkeuring kan niet opnieuw gebruikt worden. Draai het commando opnieuw om een nieuwe aan te vragen.',
+      ].join('\n'),
+      { cause: error },
+    );
+  }
   const files = renderProjectFiles(claim);
 
   const result = await install({
