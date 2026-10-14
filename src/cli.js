@@ -39,25 +39,33 @@ eigen registry-toegang en licentie; je hoeft zelf geen token te regelen.
 // instead of a dead end.
 const PROJECT_NAME = /^[a-z][a-z0-9-]*$/;
 
-// A code outlives the TTL the control plane put on it (10 minutes), not the
-// email round trip a human actually needs: open the link, type an address,
-// open the inbox, click the magic link. Measured in training on 2026-10-13,
-// that round trip routinely ran past 10 minutes, and the CLI's only answer
-// was to throw the whole run away — the loop Albert kept hitting. Renewing is
-// cheap for the control plane (it is just a fresh `create()`) and invisible
-// to someone who is still mid-roundtrip when their old code dies, so this
-// asks for a new one automatically instead of making the customer re-run the
-// command. Still bounded: an authorization nobody is ever going to approve
-// must not poll forever.
+// A code outlives the TTL the control plane put on it (10 minutes, but its
+// own contract allows up to 15 — see contracts.js), not the email round trip
+// a human actually needs: open the link, type an address, open the inbox,
+// click the magic link. Measured in training on 2026-10-13, that round trip
+// routinely ran past the TTL, and the CLI's only answer was to throw the
+// whole run away — the loop Albert kept hitting. Renewing is cheap for the
+// control plane (it is just a fresh `create()`) and invisible to someone
+// still mid-roundtrip when their old code dies, so this asks for a new one
+// automatically instead of making the customer re-run the command. Still
+// bounded: an authorization nobody is ever going to approve must not poll
+// forever.
 //
-// Both numbers have to be reachable together, or one of them is decoration.
-// At the control plane's actual 10-minute TTL, 4 renewals need up to 5 × 10
-// minutes of worst-case waiting to all happen — so the time budget is sized
-// for that, not picked independently. A shorter budget would make "4
-// renewals" a number nothing ever reaches, which is exactly what review
-// caught here with the previous 30-minute figure.
+// Review on soulbatical/create-tetra#6 measured that a fixed time budget and
+// a fixed renewal count drift apart depending on which TTL the control plane
+// happens to issue: a budget sized for a 10-minute TTL makes the count bound
+// unreachable at 10, and dead again if the server ever issues the full
+// 15 minutes the contract allows. The deadline is derived from the TTL the
+// first authorization actually came back with instead of a separate
+// constant, so the two bounds cannot diverge by construction — see
+// `deadlineFor` below.
 const DEFAULT_MAX_RENEWALS = 4;
-const DEFAULT_RENEWAL_BUDGET_MS = 50 * 60_000;
+
+/** `maxRenewals` full-TTL cycles from the moment the first code was issued. */
+function deadlineFor(authorization, maxRenewals, now) {
+  const ttlMs = authorization.expiresAt - now();
+  return authorization.expiresAt + maxRenewals * ttlMs;
+}
 
 export function projectNameProblem(name) {
   if (PROJECT_NAME.test(name)) return null;
@@ -147,7 +155,6 @@ export async function runCreateTetra({
   install = installProject,
   checkDirectory = directoryIsFree,
   maxRenewals = DEFAULT_MAX_RENEWALS,
-  renewalBudgetMs = DEFAULT_RENEWAL_BUDGET_MS,
 } = {}) {
   const parsed = parseArgs(argv, cwd);
   if (parsed.help) { write(HELP); return { kind: 'help' }; }
@@ -167,11 +174,11 @@ export async function runCreateTetra({
     throw new Error(directoryInUse(parsed.projectPath));
   }
 
-  const deadline = now() + renewalBudgetMs;
   const authorizationRequest = { action: 'install', project: { name: projectName }, targets: parsed.targets };
 
   write('Goedkeuring aanvragen...\n');
   const authorization = await client.requestAuthorization(authorizationRequest);
+  const deadline = deadlineFor(authorization, maxRenewals, now);
   write(`Open: ${authorization.verificationUri}\n`);
   write(`Bevestigingscode: ${authorization.userCode}\n`);
   browser(authorization.verificationUri, { write });

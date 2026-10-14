@@ -186,59 +186,66 @@ test('renewals run out, and the final failure still says verlopen', async () => 
   assert.equal(client.calls.some(([kind]) => kind === 'claim'), false);
 });
 
-// Review (soulbatical/create-tetra#6) measured that the previous 30-minute
+// Review round 1 (soulbatical/create-tetra#6) measured that a fixed 30-minute
 // budget made DEFAULT_MAX_RENEWALS=4 unreachable at the control plane's real
 // 10-minute TTL — the time budget always ran out first, so the test suite's
-// own 60-second-TTL stub was the only place "4 renewals" ever happened. This
-// locks the two bounds together at a realistic TTL instead.
-test('the renewal budget actually allows all configured renewals at the real TTL', async () => {
-  const TTL_MS = 10 * 60_000;
-  let clock = 0;
-  const now = () => clock;
-  const calls = [];
-  const client = {
-    calls,
-    async requestAuthorization(input) {
-      calls.push(['authorize', input]);
-      return {
-        authorizationId: 'auth-id',
-        deviceCode: 'device-secret',
-        userCode: 'ABCD-EFGH',
-        verificationUri: 'https://tetrasaas.com/install/approve?request=public-id',
-        intervalSeconds: 2,
-        expiresAt: now() + TTL_MS,
-      };
-    },
-    async pollAuthorization() {
-      calls.push(['poll']);
-      // The TTL fully elapses with nobody answering, which is the scenario
-      // the renewal budget exists for.
-      clock += TTL_MS;
-      return { status: 'expired' };
-    },
-  };
+// own 60-second-TTL stub was the only place "4 renewals" ever happened.
+// Review round 2 then measured that a *fixed* 50-minute budget only fixed
+// the 10-minute case: contracts.js accepts a TTL of up to 15 minutes, and at
+// 15 the same drift reappears (5 × 15 = 75 > 50). The deadline is now derived
+// from whatever TTL the first authorization actually came back with
+// (deadlineFor in cli.js), so this runs the same scenario at two different
+// TTLs and expects the same count both times — proving the bounds cannot
+// diverge, rather than proving they happen to agree for one chosen number.
+for (const ttlMinutes of [10, 15]) {
+  test(`all configured renewals fit at a ${ttlMinutes}-minute TTL`, async () => {
+    const TTL_MS = ttlMinutes * 60_000;
+    let clock = 0;
+    const now = () => clock;
+    const calls = [];
+    const client = {
+      calls,
+      async requestAuthorization(input) {
+        calls.push(['authorize', input]);
+        return {
+          authorizationId: 'auth-id',
+          deviceCode: 'device-secret',
+          userCode: 'ABCD-EFGH',
+          verificationUri: 'https://tetrasaas.com/install/approve?request=public-id',
+          intervalSeconds: 2,
+          expiresAt: now() + TTL_MS,
+        };
+      },
+      async pollAuthorization() {
+        calls.push(['poll']);
+        // The TTL fully elapses with nobody answering, which is the scenario
+        // the renewal budget exists for.
+        clock += TTL_MS;
+        return { status: 'expired' };
+      },
+    };
 
-  await assert.rejects(
-    runCreateTetra({
-      argv: ['my-app'],
-      cwd: '/tmp',
-      version: '1.0.0',
-      client,
-      checkDirectory: async () => true,
-      browser: () => {},
-      write: () => {},
-      sleep: async () => {},
-      now,
-      install: async () => { throw new Error('must not install'); },
-    }),
-    /verlopen/,
-  );
+    await assert.rejects(
+      runCreateTetra({
+        argv: ['my-app'],
+        cwd: '/tmp',
+        version: '1.0.0',
+        client,
+        checkDirectory: async () => true,
+        browser: () => {},
+        write: () => {},
+        sleep: async () => {},
+        now,
+        install: async () => { throw new Error('must not install'); },
+      }),
+      /verlopen/,
+    );
 
-  // 1 initial authorization + DEFAULT_MAX_RENEWALS(4) renewals, all inside
-  // the default budget — the count bound is what finally stops it, not the
-  // clock cutting it short first.
-  assert.equal(calls.filter(([kind]) => kind === 'authorize').length, 5);
-});
+    // 1 initial authorization + DEFAULT_MAX_RENEWALS(4) renewals, regardless
+    // of which TTL within the contract's range the control plane issued.
+    assert.equal(calls.filter(([kind]) => kind === 'authorize').length, 5);
+  });
+}
 
 // A denial is final by design — unlike an expiry, nothing about it should be
 // retried, so a renewal budget must not turn a "no" into another prompt.
