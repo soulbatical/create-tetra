@@ -11,9 +11,21 @@ const SCAFFOLDER_BIN = 'create-soulbatical-app';
 
 export const directoryInUse = (path) => `De map ${path} bestaat al en is niet leeg.`;
 
+// A customer who followed the starter-files instructions already has a
+// README.md, CLAUDE.md/AGENTS.md and a .claude/ directory in place before
+// create-tetra ever runs — that is what put those files there in the first
+// place. Refusing on their presence forced a round trip of moving them out of
+// the way and back, which only trained people to shuffle files rather than
+// fix anything. The scaffolder (packages/create-app, soulbatical/tetra) keeps
+// an identical allowlist for the same reason and must be kept in sync with
+// this one: it enforces the real emptiness check on the files create-tetra
+// never writes itself.
+const ALLOWED_PREEXISTING_ENTRIES = new Set(['README.md', 'CLAUDE.md', 'AGENTS.md', '.claude', '.git', '.gitignore']);
+
 export async function directoryIsFree(path) {
   try {
-    return (await readdir(path)).length === 0;
+    const entries = await readdir(path);
+    return entries.every((entry) => ALLOWED_PREEXISTING_ENTRIES.has(entry));
   } catch (error) {
     if (error.code === 'ENOENT') return true;
     throw error;
