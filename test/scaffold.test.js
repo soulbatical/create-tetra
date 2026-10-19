@@ -709,15 +709,22 @@ test('directoryIsFree', async (t) => {
     assert.equal(await directoryIsFree(target), true);
   });
 
-  // Finder drops .DS_Store and Explorer drops Thumbs.db into any folder they
-  // have displayed. A customer who just made an empty folder and looked at it
-  // must not be told it is in use.
-  await t.test('OS metadata files (.DS_Store, Thumbs.db) do not make it in use', async () => {
+  // Finder drops .DS_Store into any folder it has displayed. A customer who
+  // just made an empty folder and looked at it must not be told it is in use.
+  await t.test('a stray .DS_Store does not make it in use', async () => {
     const target = join(dir, 'os-metadata');
     await mkdir(target);
     await writeFile(join(target, '.DS_Store'), 'finder metadata');
-    await writeFile(join(target, 'Thumbs.db'), 'explorer metadata');
     assert.equal(await directoryIsFree(target), true);
+  });
+
+  // Not yet: the published scaffolder still refuses Thumbs.db, and a target
+  // let through here is refused there only after the grant is spent.
+  await t.test('Thumbs.db still makes it in use until the scaffolder allows it', async () => {
+    const target = join(dir, 'thumbs-db');
+    await mkdir(target);
+    await writeFile(join(target, 'Thumbs.db'), 'explorer metadata');
+    assert.equal(await directoryIsFree(target), false);
   });
 
   await t.test('OS metadata next to the starter-files entries is still free', async () => {
