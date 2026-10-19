@@ -709,6 +709,34 @@ test('directoryIsFree', async (t) => {
     assert.equal(await directoryIsFree(target), true);
   });
 
+  // Finder drops .DS_Store and Explorer drops Thumbs.db into any folder they
+  // have displayed. A customer who just made an empty folder and looked at it
+  // must not be told it is in use.
+  await t.test('OS metadata files (.DS_Store, Thumbs.db) do not make it in use', async () => {
+    const target = join(dir, 'os-metadata');
+    await mkdir(target);
+    await writeFile(join(target, '.DS_Store'), 'finder metadata');
+    await writeFile(join(target, 'Thumbs.db'), 'explorer metadata');
+    assert.equal(await directoryIsFree(target), true);
+  });
+
+  await t.test('OS metadata next to the starter-files entries is still free', async () => {
+    const target = join(dir, 'starter-files-with-os-metadata');
+    await mkdir(target);
+    await writeFile(join(target, 'AGENTS.md'), 'instructions');
+    await mkdir(join(target, '.claude'));
+    await writeFile(join(target, '.DS_Store'), 'finder metadata');
+    assert.equal(await directoryIsFree(target), true);
+  });
+
+  await t.test('OS metadata does not hide real content', async () => {
+    const target = join(dir, 'os-metadata-with-real-content');
+    await mkdir(target);
+    await writeFile(join(target, '.DS_Store'), 'finder metadata');
+    await writeFile(join(target, 'package.json'), '{}');
+    assert.equal(await directoryIsFree(target), false);
+  });
+
   await t.test('any other file still makes the directory in use', async () => {
     const target = join(dir, 'has-real-content');
     await mkdir(target);
