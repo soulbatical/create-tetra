@@ -20,7 +20,23 @@ export const directoryInUse = (path) => `De map ${path} bestaat al en is niet le
 // an identical allowlist for the same reason and must be kept in sync with
 // this one: it enforces the real emptiness check on the files create-tetra
 // never writes itself.
-const ALLOWED_PREEXISTING_ENTRIES = new Set(['README.md', 'CLAUDE.md', 'AGENTS.md', '.claude', '.git', '.gitignore']);
+//
+// .DS_Store (Finder) is the operating system's, not the customer's: it appears
+// in any folder that has merely been looked at, including a freshly made empty
+// one. Refusing on it sent the customer away for something he did not put
+// there. Thumbs.db (Windows Explorer) is the same case, but it joins this list
+// only once a published @soulbatical/create-app also allows it: letting it
+// through here first would spend the single-use grant and then fail in the
+// scaffolder's own emptiness check.
+const ALLOWED_PREEXISTING_ENTRIES = new Set([
+  'README.md',
+  'CLAUDE.md',
+  'AGENTS.md',
+  '.claude',
+  '.git',
+  '.gitignore',
+  '.DS_Store',
+]);
 
 export async function directoryIsFree(path) {
   try {
