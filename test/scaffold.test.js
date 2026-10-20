@@ -718,13 +718,12 @@ test('directoryIsFree', async (t) => {
     assert.equal(await directoryIsFree(target), true);
   });
 
-  // Not yet: the published scaffolder still refuses Thumbs.db, and a target
-  // let through here is refused there only after the grant is spent.
-  await t.test('Thumbs.db still makes it in use until the scaffolder allows it', async () => {
+  // Windows Explorer does the same with Thumbs.db.
+  await t.test('a stray Thumbs.db does not make it in use', async () => {
     const target = join(dir, 'thumbs-db');
     await mkdir(target);
     await writeFile(join(target, 'Thumbs.db'), 'explorer metadata');
-    assert.equal(await directoryIsFree(target), false);
+    assert.equal(await directoryIsFree(target), true);
   });
 
   await t.test('OS metadata next to the starter-files entries is still free', async () => {
@@ -733,6 +732,7 @@ test('directoryIsFree', async (t) => {
     await writeFile(join(target, 'AGENTS.md'), 'instructions');
     await mkdir(join(target, '.claude'));
     await writeFile(join(target, '.DS_Store'), 'finder metadata');
+    await writeFile(join(target, 'Thumbs.db'), 'explorer metadata');
     assert.equal(await directoryIsFree(target), true);
   });
 

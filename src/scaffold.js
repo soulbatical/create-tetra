@@ -21,13 +21,13 @@ export const directoryInUse = (path) => `De map ${path} bestaat al en is niet le
 // this one: it enforces the real emptiness check on the files create-tetra
 // never writes itself.
 //
-// .DS_Store (Finder) is the operating system's, not the customer's: it appears
-// in any folder that has merely been looked at, including a freshly made empty
-// one. Refusing on it sent the customer away for something he did not put
-// there. Thumbs.db (Windows Explorer) is the same case, but it joins this list
-// only once a published @soulbatical/create-app also allows it: letting it
-// through here first would spend the single-use grant and then fail in the
-// scaffolder's own emptiness check.
+// .DS_Store (Finder) and Thumbs.db (Windows Explorer) are the operating
+// system's, not the customer's: they appear in any folder that has merely been
+// looked at, including a freshly made empty one. Refusing on them sent the
+// customer away for something he did not put there. The published
+// @soulbatical/create-app allows both from 0.2.45; Thumbs.db must not be
+// allowed here against an older scaffolder, which would spend the single-use
+// grant and then fail in its own emptiness check.
 const ALLOWED_PREEXISTING_ENTRIES = new Set([
   'README.md',
   'CLAUDE.md',
@@ -36,6 +36,7 @@ const ALLOWED_PREEXISTING_ENTRIES = new Set([
   '.git',
   '.gitignore',
   '.DS_Store',
+  'Thumbs.db',
 ]);
 
 export async function directoryIsFree(path) {
