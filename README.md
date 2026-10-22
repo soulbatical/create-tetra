@@ -9,6 +9,20 @@ npx create-tetra my-app
 Meer is het niet. De projectnaam is kleine letters, cijfers en streepjes. Geen token om te kopiëren, geen registry om in te stellen, geen
 Doppler.
 
+## Projectnaam
+
+De mapnaam is meestal de projectnaam. Is die geen geldige naam — `dansschool.crm`,
+`Mijn CRM`, `2048` — dan leidt create-tetra er een af (`dansschool-crm`,
+`mijn-crm`, `app-2048`) en zegt hij welke. Wil je zelf kiezen:
+
+```bash
+npx create-tetra . --name dansschool-crm
+```
+
+De uiteindelijke naam moet kleine letters, cijfers en streepjes bevatten en met
+een letter beginnen. Die controle blijft vóór de goedkeuring staan, zodat een
+naamfout je geen goedkeuring kost.
+
 ## Wat er gebeurt
 
 1. De CLI vraagt een goedkeuring aan en opent `https://tetrasaas.com`.
@@ -22,6 +36,25 @@ Doppler.
 
 De organisatiebrede tokens van Soulbatical komen hier nooit aan te pas. Je krijgt
 je eigen, intrekbare toegang.
+
+## Goedkeuring: hoelang geldig
+
+De code en de link die je in de browser bevestigt, blijven geldig zolang de
+goedkeuring loopt — tot 9 uur. create-tetra roteert ze niet tijdens een run: je
+kunt de browser dus later openen zonder dat je link intussen een andere code
+krijgt. Alleen als de server zegt dat de code echt verlopen is, vraagt de CLI een
+nieuwe aan.
+
+De CLI wacht maximaal 10 uur. Bij afloop zegt hij expliciet wat de staat is:
+geannuleerd, verlopen, of mislukt na goedkeuring. Bij de eerste twee is je
+goedkeuring niet verbruikt en is er niets geïnstalleerd; bij de laatste zegt de
+melding wat er nog te repareren valt en welke stap je zonder nieuwe goedkeuring
+kunt herhalen.
+
+De servertermijn is 8 uur. Deze CLI accepteert een `expires_at` tot 9 uur — een
+uur marge voor klokverschil — en weigert alles daarboven. Geeft de server nog de
+oude 10 minuten, dan blijft de CLI werken: hij vraagt pas een nieuwe code aan als
+die echt verlopen is.
 
 ## Wat er waar terechtkomt
 
@@ -67,6 +100,52 @@ create-tetra volgt die scheiding:
 create-tetra draait de eerste `npm install` zelf, zodat je project bewezen
 installeerbaar is voordat je iets te horen krijgt.
 
+## Tweede machine / CI zonder ~/.npmrc
+
+Het registry-token staat in je gebruikers-npmrc op de machine waar create-tetra
+heeft gedraaid. Een tweede machine heeft dat bestand niet. `npm ci` vraagt de
+registry dan zonder token, en de registry antwoordt met `E404 Project not found`
+— een 404, geen 401, omdat een private registry niet verraadt welke projecten
+bestaan. Dat is dus geen verkeerde URL en geen auth-instelling die je moet
+aanpassen: de tokenregel ontbreekt.
+
+Controleer dat in de projectmap:
+
+```bash
+npx create-tetra --doctor
+```
+
+De doctor noemt de registry-sleutel die ontbreekt en hoe je hem overzet. Op de
+machine waar create-tetra werkte:
+
+```bash
+npx create-tetra --export-credentials tetra-credentials.json
+```
+
+Kopieer dat bestand naar de tweede machine en importeer het daar:
+
+```bash
+npx create-tetra --import-credentials tetra-credentials.json
+rm tetra-credentials.json
+```
+
+Het exportbestand is modus 0600 en bevat je token; verwijder het na gebruik op
+beide machines. De import schrijft alleen de tokenregel voor de registry uit je
+project-`.npmrc`, met dezelfde hostbeperking als de rest van create-tetra, en hij
+weigert placeholders, meerregelige waarden en onbekende hosts.
+
+Op CI is er geen gebruikers-npmrc. Daar is `ci/npmrc` het bestand: het staat in
+je repo, bevat `${NPM_TOKEN}` in plaats van het token, en `railway.toml` en
+`netlify.toml` wijzen `NPM_CONFIG_USERCONFIG` erheen. Zet `NPM_TOKEN` als
+build-variabele (de waarde staat in je `.env`). Op een andere CI:
+
+```bash
+NPM_CONFIG_USERCONFIG="$PWD/ci/npmrc" npm ci
+```
+
+Zonder die variabele leest npm je gebruikersconfiguratie, die op een
+buildmachine niet bestaat — en dan krijg je dezelfde 404.
+
 ## Veiligheidsgrenzen
 
 - Vóór jouw goedkeuring haalt deze package niets privés op en leest hij geen
@@ -83,6 +162,9 @@ installeerbaar is voordat je iets te horen krijgt.
   alles wat een `.env`-regel wordt mag geen nieuwe regel bevatten.
 - De helper-installatie draait met `--ignore-scripts`.
 - Token, licentiesleutel en goedkeuringsbewijs verschijnen nooit in de output.
+- Het exportbestand van `--export-credentials` bevat je registry-token, krijgt
+  modus 0600 en is bedoeld om direct na de import verwijderd te worden. Zet het
+  niet in git.
 
 ## Verificatie vóór uitvoeren
 

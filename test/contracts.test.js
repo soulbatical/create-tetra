@@ -2,7 +2,11 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import { isReservedRelease } from '../src/cli.js';
-import { validateAuthorization, validateAuthorizationStatus } from '../src/contracts.js';
+import {
+  MAX_AUTHORIZATION_TTL_MS,
+  validateAuthorization,
+  validateAuthorizationStatus,
+} from '../src/contracts.js';
 
 const ORIGIN = 'https://tetrasaas.com';
 
@@ -39,14 +43,28 @@ test('refuses an approval URL outside the allowlisted origin', () => {
 
 // A long-lived authorization is a long-lived window for someone to phish an
 // approval, so the CLI caps what it will accept rather than trusting the server.
-test('refuses an expiry that is in the past or unreasonably far ahead', () => {
+// The cap is 9 hours: the control plane issues 8, and the extra hour absorbs
+// clock skew without becoming an unbounded grant.
+test('refuses an expiry that is in the past or beyond the nine-hour cap', () => {
+  const now = Date.parse('2026-10-22T08:00:00.000Z');
+  const at = (offsetMs) =>
+    authorization({ expires_at: new Date(now + offsetMs).toISOString() });
+
+  assert.equal(MAX_AUTHORIZATION_TTL_MS, 9 * 60 * 60_000);
+
+  assert.equal(
+    validateAuthorization(at(MAX_AUTHORIZATION_TTL_MS), { approvalOrigin: ORIGIN, now: () => now }).userCode.length > 0,
+    true,
+    'exactly nine hours must be accepted',
+  );
+
   for (const expiresAt of [
-    new Date(Date.now() - 1_000).toISOString(),
-    new Date(Date.now() + 60 * 60_000).toISOString(),
+    new Date(now - 1_000).toISOString(),
+    new Date(now + MAX_AUTHORIZATION_TTL_MS + 1).toISOString(),
     'not-a-date',
   ]) {
     assert.throws(
-      () => validateAuthorization(authorization({ expires_at: expiresAt }), { approvalOrigin: ORIGIN }),
+      () => validateAuthorization(authorization({ expires_at: expiresAt }), { approvalOrigin: ORIGIN, now: () => now }),
       /expired authorization/,
       `expected expiry ${expiresAt} to be refused`,
     );

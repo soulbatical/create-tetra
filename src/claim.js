@@ -30,7 +30,11 @@ export const SCAFFOLDER_SCOPE = '@soulbatical';
 // The scaffolder is Soulbatical infrastructure, not customer-supplied, so the
 // set of hosts it can ever live on is short and known. Anything else is either a
 // mistake or an attack, and both should stop here.
-const ALLOWED_REGISTRY_HOSTS = new Set([
+//
+// Exported because the second-machine commands validate the same set: a token
+// file that names a host outside it would install credentials for a registry we
+// do not control, which is the one thing the claim validation also refuses.
+export const ALLOWED_REGISTRY_HOSTS = new Set([
   'gitlab.com',
   'npm.pkg.github.com',
   'registry.tetrasaas.com',

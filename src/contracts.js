@@ -7,6 +7,13 @@ const AUTHORIZATION_KEYS = [
   'verification_uri',
 ];
 
+// A code that stays valid for a working day is what makes an approval survive a
+// customer who does not look at the browser immediately. The cap exists so a
+// compromised or mistaken control plane cannot hand out an effectively
+// permanent grant: the server issues 8 hours and this accepts one hour of clock
+// skew on top, no more.
+export const MAX_AUTHORIZATION_TTL_MS = 9 * 60 * 60_000;
+
 function isRecord(value) {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
 }
@@ -25,7 +32,7 @@ function requireExactKeys(value, expected, label) {
   }
 }
 
-export function validateAuthorization(value, { approvalOrigin } = {}) {
+export function validateAuthorization(value, { approvalOrigin, now = Date.now } = {}) {
   if (!isRecord(value)) throw new Error('Control plane returned an invalid authorization.');
   requireExactKeys(value, AUTHORIZATION_KEYS, 'an authorization');
 
@@ -36,8 +43,8 @@ export function validateAuthorization(value, { approvalOrigin } = {}) {
   }
 
   const expiresAt = Date.parse(requireString(value.expires_at, 'authorization expiry'));
-  const now = Date.now();
-  if (!Number.isFinite(expiresAt) || expiresAt <= now || expiresAt > now + 15 * 60_000) {
+  const nowMs = now();
+  if (!Number.isFinite(expiresAt) || expiresAt <= nowMs || expiresAt > nowMs + MAX_AUTHORIZATION_TTL_MS) {
     throw new Error('Control plane returned an expired authorization.');
   }
 
