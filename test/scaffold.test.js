@@ -316,6 +316,7 @@ test('a failed dependency install leaves a recoverable project, not a dead end',
   const result = await installProject(h.options);
 
   assert.equal(result.installed, false);
+  assert.match(output, /Mislukt na goedkeuring/);
   assert.match(output, /Het project staat in \/projects\/my-app/);
   assert.match(output, /langer dan 15 minuten/);
   assert.match(output, /cd \/projects\/my-app && npm install/);
@@ -573,6 +574,33 @@ test('the reason npm gave is passed on, not the generic wrapper', async () => {
   assert.doesNotMatch(notice, /\(Command failed: npm install\)/);
 });
 
+// On a second machine the registry answers a missing token with E404. That is
+// the exact failure this release adds a route for, so the install failure has to
+// point at it instead of leaving the customer with "Project not found".
+test('an E404 during the install points at --doctor, not at a wrong URL', async () => {
+  const h = harness();
+  const said = [];
+  const failed = Object.assign(new Error('Command failed: npm install'), {
+    killed: false,
+    signal: null,
+    stderr: 'npm error code E404\nnpm error 404 Project not found\n',
+  });
+  await installProject({
+    ...h.options,
+    write: (text) => said.push(text),
+    exec: async (command, args, options) => {
+      h.execs.push({ command, args, options });
+      if (command === 'npm' && args[0] === 'install' && options.cwd === '/projects/my-app') throw failed;
+      return { stdout: '', stderr: '' };
+    },
+  });
+
+  const notice = said.join('');
+  assert.match(notice, /--doctor/);
+  assert.match(notice, /geen token|404/i);
+  assert.match(notice, /geen verkeerde URL|niet dat de URL verkeerd is/i);
+});
+
 // Netlify installs before it runs the build command, so the credentials have to
 // be in a file rather than in something a script exports; railway.toml and
 // netlify.toml both point NPM_CONFIG_USERCONFIG at ci/npmrc. The scaffolder
@@ -664,6 +692,10 @@ test('the closing message names the build variable the CI file depends on', () =
   assert.match(message, /401/);
   // It must point at .env for the value rather than printing one.
   assert.equal(message.includes('deploy-token-value'), false);
+  // A second machine is a normal case, not an edge one; name the command before
+  // the customer meets the E404.
+  assert.match(message, /--doctor/);
+  assert.match(message, /E404/);
 });
 
 // Nothing above may leak into the failure path: that message already explains a

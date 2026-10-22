@@ -38,6 +38,22 @@ test('the shipped version and the refusal guard cannot drift apart', () => {
   );
 });
 
+// The second-machine route is only useful if the customer can find it before he
+// has an E404 he cannot explain.
+test('the README documents the second machine, CI and the approval lifetime', () => {
+  const readme = readFileSync(new URL('../README.md', import.meta.url), 'utf8');
+
+  assert.match(readme, /## Tweede machine \/ CI zonder ~\/\.npmrc/);
+  for (const command of ['--doctor', '--export-credentials', '--import-credentials']) {
+    assert.ok(readme.includes(command), `the README must name ${command}`);
+  }
+  assert.ok(readme.includes('NPM_CONFIG_USERCONFIG="$PWD/ci/npmrc"'), 'CI needs the selectable file');
+  assert.match(readme, /E404 Project not found/);
+  assert.match(readme, /9 uur/);
+  assert.match(readme, /10 uur/);
+  assert.match(readme, /--name/);
+});
+
 test('packed tarball starts in a clean shell without private registry config', () => {
   const target = mkdtempSync(join(tmpdir(), 'create-tetra-clean-shell-'));
   try {

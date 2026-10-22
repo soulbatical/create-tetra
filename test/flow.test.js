@@ -128,15 +128,73 @@ test('an expired approval with no renewals left never reaches the claim', async 
   assert.equal(client.calls.some(([kind]) => kind === 'claim'), false);
 });
 
-// The TTL (10 minutes) is shorter than the email round trip a human actually
-// needs, which is exactly why the old hard stop on 'expired' was the loop
-// Albert kept hitting: a renewal must pick up with a fresh code and still
-// finish the install when the renewal itself gets approved.
-test('an expired code is renewed automatically, and a later approval still installs', async () => {
+// The TTL is no longer the 10 minutes that made a renewal the normal path: the
+// control plane now issues a code that stays valid for hours, and the CLI must
+// leave that one code alone until the server itself says it expired. A new code
+// mid-run means a new link, a new code to compare, and a customer who has to
+// look at the browser twice.
+test('a valid code is never rotated, no matter how long the customer takes', async () => {
+  const TTL_MS = 9 * 60 * 60_000;
+  let clock = 0;
+  const now = () => clock;
+  const calls = [];
+  const opened = [];
+  let output = '';
+  const client = {
+    calls,
+    async requestAuthorization() {
+      calls.push(['authorize']);
+      return {
+        authorizationId: 'auth-id',
+        deviceCode: 'device-secret',
+        userCode: 'ABCD-EFGH',
+        verificationUri: 'https://tetrasaas.com/install/approve?request=public-id',
+        intervalSeconds: 60,
+        expiresAt: now() + TTL_MS,
+      };
+    },
+    async pollAuthorization() {
+      calls.push(['poll']);
+      // The customer only looks at the browser after almost nine hours.
+      if (now() >= TTL_MS - 60_000) return { status: 'approved', installGrant: 'grant-secret' };
+      return { status: 'pending' };
+    },
+    async claim() {
+      return claim;
+    },
+  };
+
+  const result = await runCreateTetra({
+    argv: ['horeca-crm'],
+    cwd: '/tmp',
+    version: '1.0.0',
+    client,
+    checkDirectory: async () => true,
+    browser: (url) => opened.push(url),
+    write: (text) => { output += text; },
+    sleep: async (ms) => { clock += ms; },
+    now,
+    install: async (options) => ({ projectPath: options.projectPath, projectName: options.projectName }),
+  });
+
+  assert.equal(result.kind, 'installed');
+  assert.equal(calls.filter(([kind]) => kind === 'authorize').length, 1, 'the code must not be rotated');
+  assert.equal(opened.length, 1, 'the same link is opened once');
+  assert.equal((output.match(/Bevestigingscode: ABCD-EFGH/g) ?? []).length, 1);
+  // The waiting line has to say how long the code is still good for.
+  assert.match(output, /Geldig tot .*nog 9 uur/);
+  assert.match(output, /Ik wacht tot .*nog 10 uur/);
+  assert.match(output, /blijven geldig zolang de goedkeuring loopt/);
+});
+
+// An expired code is the one case where a renewal is allowed: the customer kept
+// the old link open while it died, and asking again keeps the run alive.
+test('an expired code is renewed, and a later approval still installs', async () => {
   const client = stubClient({
     pollStatuses: [{ status: 'expired' }, { status: 'approved', installGrant: 'grant-secret' }],
   });
   const installed = [];
+  let output = '';
 
   const result = await runCreateTetra({
     argv: ['horeca-crm'],
@@ -145,7 +203,7 @@ test('an expired code is renewed automatically, and a later approval still insta
     client,
     checkDirectory: async () => true,
     browser: () => {},
-    write: () => {},
+    write: (text) => { output += text; },
     sleep: async () => {},
     install: async (options) => {
       installed.push(options);
@@ -156,15 +214,96 @@ test('an expired code is renewed automatically, and a later approval still insta
   assert.equal(result.kind, 'installed');
   assert.equal(installed.length, 1);
   assert.equal(client.calls.filter(([kind]) => kind === 'authorize').length, 2);
-  assert.equal(client.calls.filter(([kind]) => kind === 'poll').length, 2);
+  assert.match(output, /Deze code is verlopen/);
 });
 
-// Renewing has to stop eventually: an authorization nobody is ever going to
-// approve must not poll the control plane forever.
-test('renewals run out, and the final failure still says verlopen', async () => {
-  const client = stubClient({
-    pollStatuses: [{ status: 'expired' }, { status: 'expired' }, { status: 'expired' }],
-  });
+// A renewal count alone stopped being a useful bound once the TTL became hours:
+// 4 renewals at 9 hours is two days. The bound is now the wall clock, and the
+// run must stop exactly there with a message that describes what happened.
+test('the wait is bounded at ten hours, and the final message says verlopen', async () => {
+  const TTL_MS = 10 * 60_000;
+  const BUDGET_MS = 10 * 60 * 60_000;
+  let clock = 0;
+  let currentExpiry = 0;
+  const now = () => clock;
+  const calls = [];
+  let output = '';
+  const client = {
+    calls,
+    async requestAuthorization() {
+      calls.push(['authorize']);
+      currentExpiry = now() + TTL_MS;
+      return {
+        authorizationId: 'auth-id',
+        deviceCode: 'device-secret',
+        userCode: 'ABCD-EFGH',
+        verificationUri: 'https://tetrasaas.com/install/approve?request=public-id',
+        intervalSeconds: 60,
+        expiresAt: currentExpiry,
+      };
+    },
+    async pollAuthorization() {
+      calls.push(['poll']);
+      return { status: now() >= currentExpiry ? 'expired' : 'pending' };
+    },
+  };
+
+  await assert.rejects(
+    runCreateTetra({
+      argv: ['my-app'],
+      cwd: '/tmp',
+      version: '1.0.0',
+      client,
+      checkDirectory: async () => true,
+      browser: () => {},
+      write: (text) => { output += text; },
+      sleep: async (ms) => { clock += ms; },
+      now,
+      install: async () => { throw new Error('must not install'); },
+    }),
+    (error) => {
+      assert.match(error.message, /Verlopen/);
+      assert.match(error.message, /10 uur/);
+      assert.match(error.message, /niet verbruikt/);
+      assert.match(error.message, /niets geïnstalleerd/);
+      return true;
+    },
+  );
+
+  assert.equal(clock, BUDGET_MS, 'the advertised ten hours is the actual bound');
+  // One at the start and a renewal per ten-minute TTL, all inside the budget.
+  assert.equal(calls.filter(([kind]) => kind === 'authorize').length, 60);
+  assert.match(output, /Ik wacht tot .*nog 10 uur/);
+});
+
+// The deadline is a promise printed to the customer and to an AI assistant. A
+// later renewal must not be able to extend it, however long the server makes
+// its own TTL.
+test('a renewal with a much longer TTL cannot extend the announced deadline', async () => {
+  let clock = 0;
+  const now = () => clock;
+  let currentExpiry = 0;
+  const calls = [];
+  const client = {
+    calls,
+    async requestAuthorization() {
+      calls.push(['authorize']);
+      const ttlMs = calls.filter(([kind]) => kind === 'authorize').length === 1 ? 2 * 60_000 : 100 * 60 * 60_000;
+      currentExpiry = now() + ttlMs;
+      return {
+        authorizationId: 'auth-id',
+        deviceCode: 'device-secret',
+        userCode: 'ABCD-EFGH',
+        verificationUri: 'https://tetrasaas.com/install/approve?request=public-id',
+        intervalSeconds: 60,
+        expiresAt: currentExpiry,
+      };
+    },
+    async pollAuthorization() {
+      calls.push(['poll']);
+      return { status: now() >= currentExpiry ? 'expired' : 'pending' };
+    },
+  };
 
   await assert.rejects(
     runCreateTetra({
@@ -175,77 +314,16 @@ test('renewals run out, and the final failure still says verlopen', async () => 
       checkDirectory: async () => true,
       browser: () => {},
       write: () => {},
-      sleep: async () => {},
+      sleep: async (ms) => { clock += ms; },
+      now,
+      maxRenewals: 1,
       install: async () => { throw new Error('must not install'); },
-      maxRenewals: 2,
     }),
-    /verlopen/,
+    /Verlopen/,
   );
 
-  assert.equal(client.calls.filter(([kind]) => kind === 'authorize').length, 3);
-  assert.equal(client.calls.some(([kind]) => kind === 'claim'), false);
+  assert.equal(clock, 10 * 60 * 60_000);
 });
-
-// Review round 1 (soulbatical/create-tetra#6) measured that a fixed 30-minute
-// budget made DEFAULT_MAX_RENEWALS=4 unreachable at the control plane's real
-// 10-minute TTL — the time budget always ran out first, so the test suite's
-// own 60-second-TTL stub was the only place "4 renewals" ever happened.
-// Review round 2 then measured that a *fixed* 50-minute budget only fixed
-// the 10-minute case: contracts.js accepts a TTL of up to 15 minutes, and at
-// 15 the same drift reappears (5 × 15 = 75 > 50). The deadline is now derived
-// from whatever TTL the first authorization actually came back with
-// (deadlineFor in cli.js), so this runs the same scenario at two different
-// TTLs and expects the same count both times — proving the bounds cannot
-// diverge, rather than proving they happen to agree for one chosen number.
-for (const ttlMinutes of [10, 15]) {
-  test(`all configured renewals fit at a ${ttlMinutes}-minute TTL`, async () => {
-    const TTL_MS = ttlMinutes * 60_000;
-    let clock = 0;
-    const now = () => clock;
-    const calls = [];
-    const client = {
-      calls,
-      async requestAuthorization(input) {
-        calls.push(['authorize', input]);
-        return {
-          authorizationId: 'auth-id',
-          deviceCode: 'device-secret',
-          userCode: 'ABCD-EFGH',
-          verificationUri: 'https://tetrasaas.com/install/approve?request=public-id',
-          intervalSeconds: 2,
-          expiresAt: now() + TTL_MS,
-        };
-      },
-      async pollAuthorization() {
-        calls.push(['poll']);
-        // The TTL fully elapses with nobody answering, which is the scenario
-        // the renewal budget exists for.
-        clock += TTL_MS;
-        return { status: 'expired' };
-      },
-    };
-
-    await assert.rejects(
-      runCreateTetra({
-        argv: ['my-app'],
-        cwd: '/tmp',
-        version: '1.0.0',
-        client,
-        checkDirectory: async () => true,
-        browser: () => {},
-        write: () => {},
-        sleep: async () => {},
-        now,
-        install: async () => { throw new Error('must not install'); },
-      }),
-      /verlopen/,
-    );
-
-    // 1 initial authorization + DEFAULT_MAX_RENEWALS(4) renewals, regardless
-    // of which TTL within the contract's range the control plane issued.
-    assert.equal(calls.filter(([kind]) => kind === 'authorize').length, 5);
-  });
-}
 
 // Review round 2 measured that a poll blip outlasting the client's own ~1s
 // retry window threw the whole run away, despite tens of minutes of renewal
@@ -345,6 +423,7 @@ test('a failed claim says the approval is spent, not just that something broke',
       install: async () => { throw new Error('must not install'); },
     }),
     (error) => {
+      assert.match(error.message, /Mislukt na goedkeuring/);
       assert.match(error.message, /kan niet opnieuw gebruikt worden/);
       assert.match(error.message, /opnieuw/);
       assert.match(error.message, /ECONNRESET/);
@@ -354,68 +433,9 @@ test('a failed claim says the approval is spent, not just that something broke',
   );
 });
 
-// Review round 3, W1: the printed deadline ("ik wacht tot <time>") was only
-// enforced *between* cycles, at the renewal decision — not inside a cycle's
-// own poll loop, which ran until `current.expiresAt` regardless of how far
-// past the deadline that was. Measured: an announced 00:10:00 actually
-// stopped at 00:17:00 when a later renewal happened to carry a longer TTL.
-// This reproduces that with realistic per-interval polling (not a single
-// poll call that jumps the clock by a whole TTL) so the loop's own repeated
-// condition check is what is actually under test.
-test('the announced deadline is honoured even when a renewal carries a longer TTL', async () => {
-  let clock = 0;
-  const now = () => clock;
-  let currentExpiry = 0;
-  const calls = [];
-  const client = {
-    calls,
-    async requestAuthorization(input) {
-      calls.push(['authorize', input]);
-      // First code: 2 minutes. The renewal (granted after that expires)
-      // comes back with a much longer TTL — the case review measured.
-      const ttlMs = calls.filter(([kind]) => kind === 'authorize').length === 1 ? 2 * 60_000 : 100 * 60_000;
-      currentExpiry = now() + ttlMs;
-      return {
-        authorizationId: 'auth-id',
-        deviceCode: 'device-secret',
-        userCode: 'ABCD-EFGH',
-        verificationUri: 'https://tetrasaas.com/install/approve?request=public-id',
-        intervalSeconds: 60,
-        expiresAt: currentExpiry,
-      };
-    },
-    async pollAuthorization() {
-      calls.push(['poll']);
-      return { status: now() >= currentExpiry ? 'expired' : 'pending' };
-    },
-  };
-
-  await assert.rejects(
-    runCreateTetra({
-      argv: ['my-app'],
-      cwd: '/tmp',
-      version: '1.0.0',
-      client,
-      checkDirectory: async () => true,
-      browser: () => {},
-      write: () => {},
-      sleep: async (ms) => { clock += ms; },
-      now,
-      maxRenewals: 1,
-      install: async () => { throw new Error('must not install'); },
-    }),
-    /verlopen/,
-  );
-
-  // Deadline = first expiresAt(2min) + maxRenewals(1) * ttl(2min) = 4 minutes.
-  // Without the fix, the second cycle's 100-minute TTL would have let this
-  // run to ~102 minutes instead.
-  assert.equal(now(), 4 * 60_000);
-});
-
 // A denial is final by design — unlike an expiry, nothing about it should be
 // retried, so a renewal budget must not turn a "no" into another prompt.
-test('a denial is never retried, even with renewals left in the budget', async () => {
+test('a denial is never retried, and the final state is geannuleerd', async () => {
   const client = stubClient({ pollStatuses: [{ status: 'denied' }] });
 
   await assert.rejects(
@@ -431,7 +451,12 @@ test('a denial is never retried, even with renewals left in the budget', async (
       install: async () => { throw new Error('must not install'); },
       maxRenewals: 4,
     }),
-    /geweigerd/,
+    (error) => {
+      assert.match(error.message, /Geannuleerd/);
+      assert.match(error.message, /niet verbruikt/);
+      assert.match(error.message, /niets geïnstalleerd/);
+      return true;
+    },
   );
 
   assert.equal(client.calls.filter(([kind]) => kind === 'authorize').length, 1);
@@ -561,8 +586,68 @@ test('the closing instructions point at a directory that exists', async () => {
 });
 
 // The scaffolder enforces kebab-case and does so after the single-use grant is
-// already spent, so this has to be caught before the approval is requested.
-test('an unusable project name costs no approval', async () => {
+// already spent, so a name we cannot use has to be caught before the approval.
+// What changed is where the name comes from: a directory is not a slug, and
+// refusing `npx create-tetra .` in `dansschool.crm` made the customer rename his
+// own folder. Derive a slug and say so; --name is the explicit override.
+async function runCapturingName(argv, { cwd = '/tmp' } = {}) {
+  let output = '';
+  let requested;
+  const client = stubClient();
+  const requestAuthorization = client.requestAuthorization.bind(client);
+  client.requestAuthorization = async (input) => {
+    requested = input;
+    return requestAuthorization(input);
+  };
+
+  const result = await runCreateTetra({
+    argv,
+    cwd,
+    version: '1.0.0',
+    client,
+    checkDirectory: async () => true,
+    browser: () => {},
+    write: (text) => { output += text; },
+    sleep: async () => {},
+    install: async (options) => ({ projectPath: options.projectPath, projectName: options.projectName }),
+  });
+
+  return { result, output, requested, client };
+}
+
+test('a directory name with dots gets a slug, and the CLI shows which', async () => {
+  const { requested, output } = await runCapturingName(['dansschool.crm']);
+
+  assert.equal(requested.project.name, 'dansschool-crm');
+  assert.match(output, /Project: dansschool-crm \(afgeleid van de mapnaam "dansschool\.crm"\)/);
+});
+
+test('underscores, spaces, accents and a leading digit still produce a usable slug', async () => {
+  for (const [directory, slug] of [
+    ['Mijn_CRM', 'mijn-crm'],
+    ['Klant Demo', 'klant-demo'],
+    ['Café Crème', 'cafe-creme'],
+    ['2048', 'app-2048'],
+    ['v1.2.3', 'v1-2-3'],
+  ]) {
+    const { requested, output } = await runCapturingName([directory]);
+    assert.equal(requested.project.name, slug, `${directory} should become ${slug}`);
+    assert.match(output, /afgeleid van de mapnaam/);
+  }
+});
+
+test('--name overrides the directory name, in both spellings', async () => {
+  for (const argv of [
+    ['dansschool.crm', '--name', 'crm-dansschool'],
+    ['dansschool.crm', '--name=crm-dansschool'],
+  ]) {
+    const { requested, output } = await runCapturingName(argv);
+    assert.equal(requested.project.name, 'crm-dansschool');
+    assert.equal(output.includes('afgeleid van de mapnaam'), false, 'an explicit name is not derived');
+  }
+});
+
+test('an unusable --name costs no approval', async () => {
   const { projectNameProblem } = await import('../src/cli.js');
 
   for (const name of ['MyApp', 'my_app', 'Klant Demo', '2048', 'tetra.demo', '-app']) {
@@ -575,7 +660,7 @@ test('an unusable project name costs no approval', async () => {
   const client = stubClient();
   await assert.rejects(
     runCreateTetra({
-      argv: ['MyApp'],
+      argv: ['MyApp', '--name', 'MyApp'],
       cwd: '/tmp',
       version: '1.0.0',
       client,
@@ -589,4 +674,114 @@ test('an unusable project name costs no approval', async () => {
   );
 
   assert.deepEqual(client.calls, [], 'the control plane must not be contacted');
+});
+
+test('a name that cannot even be derived names --name instead of dead-ending', async () => {
+  const client = stubClient();
+  await assert.rejects(
+    runCreateTetra({
+      argv: ['...'],
+      cwd: '/tmp',
+      version: '1.0.0',
+      client,
+      checkDirectory: async () => true,
+      browser: () => { throw new Error('must not open a browser'); },
+      write: () => {},
+      sleep: async () => {},
+      install: async () => { throw new Error('must not install'); },
+    }),
+    (error) => {
+      assert.match(error.message, /--name/);
+      return true;
+    },
+  );
+
+  assert.deepEqual(client.calls, [], 'the control plane must not be contacted');
+});
+
+// The second-machine route is a CLI command, not a paragraph in a README the
+// customer reads only after the E404. These pin the wiring: the command runs,
+// its report reaches the terminal, and a failing doctor is a failing exit.
+test('--doctor prints the diagnosis and reports whether the machine is usable', async () => {
+  let output = '';
+  const seen = [];
+  const result = await runCreateTetra({
+    argv: ['--doctor'],
+    cwd: '/projects/my-app',
+    version: '1.0.0',
+    credentials: {
+      doctor: async (options) => {
+        seen.push(options);
+        return { ok: false, report: 'GEEN TOKEN\n' };
+      },
+    },
+    write: (text) => { output += text; },
+  });
+
+  assert.deepEqual(seen, [{ projectPath: '/projects/my-app' }]);
+  assert.equal(result.kind, 'doctor');
+  assert.equal(result.ok, false);
+  assert.match(output, /GEEN TOKEN/);
+});
+
+test('--doctor can be pointed at another project directory', async () => {
+  const seen = [];
+  await runCreateTetra({
+    argv: ['--doctor', '/projects/other'],
+    cwd: '/home/me',
+    version: '1.0.0',
+    credentials: {
+      doctor: async (options) => { seen.push(options); return { ok: true, report: '' }; },
+    },
+    write: () => {},
+  });
+
+  assert.deepEqual(seen, [{ projectPath: '/projects/other' }]);
+});
+
+test('--export-credentials and --import-credentials pass the resolved file through', async () => {
+  const exported = [];
+  await runCreateTetra({
+    argv: ['--export-credentials', 'tetra-credentials.json', '/projects/my-app'],
+    cwd: '/home/me',
+    version: '1.0.0',
+    credentials: {
+      export: async (options) => { exported.push(options); return { destination: options.destination, authKey: '//x/' }; },
+    },
+    write: () => {},
+  });
+  assert.deepEqual(exported, [{ projectPath: '/projects/my-app', destination: '/home/me/tetra-credentials.json' }]);
+
+  const imported = [];
+  await runCreateTetra({
+    argv: ['--import-credentials', 'tetra-credentials.json'],
+    cwd: '/home/me',
+    version: '1.0.0',
+    credentials: {
+      import: async (options) => { imported.push(options); return { path: '/home/me/.npmrc', authKey: '//x/' }; },
+    },
+    write: () => {},
+  });
+  assert.deepEqual(imported, [{ source: '/home/me/tetra-credentials.json' }]);
+});
+
+test('a credential command without a file says what is missing', async () => {
+  for (const argv of [['--export-credentials'], ['--import-credentials']]) {
+    await assert.rejects(
+      runCreateTetra({ argv, version: '1.0.0', write: () => {} }),
+      /bestand/,
+    );
+  }
+});
+
+test('--help names the new options and how long the approval stays valid', async () => {
+  let output = '';
+  await runCreateTetra({ argv: ['--help'], version: '1.0.0', write: (text) => { output += text; } });
+
+  for (const expected of ['--name', '--doctor', '--export-credentials', '--import-credentials']) {
+    assert.ok(output.includes(expected), `--help must mention ${expected}`);
+  }
+  assert.match(output, /9 uur/);
+  assert.match(output, /10 uur/);
+  assert.match(output, /niet opnieuw te starten|niet opnieuw starten/);
 });

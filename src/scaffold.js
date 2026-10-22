@@ -296,7 +296,7 @@ const commandReason = (error) => lastLine(error.stderr) ?? (error.message ?? 'on
 // failure in here costs the customer his approval. Saying so is the difference
 // between "try again" and "why did nothing happen".
 const spentGrant = (what, reason, retry, leftBehind = null) => [
-  `${what}: ${reason}`,
+  `Mislukt na goedkeuring: ${what}: ${reason}`,
   '',
   ...(leftBehind ? [`Wat er staat in ${leftBehind} is onvolledig; verwijder die map.`] : ['Er is nog niets geïnstalleerd.']),
   'Je goedkeuring is wel verbruikt, dus je keurt opnieuw goed in de browser.',
@@ -480,6 +480,7 @@ export async function installProject({
       installed = false;
       write([
         '',
+        'Mislukt na goedkeuring.',
         'Je registry-token kon niet worden opgeslagen:',
         `  ${error.message}`,
         '',
@@ -517,12 +518,25 @@ export async function installProject({
       // `error.message` is the generic `Command failed: npm install`; the reason
       // the customer needs — 401, ERESOLVE, ENOTFOUND — is on stderr.
       const reason = error.killed ? 'het duurde langer dan 15 minuten' : commandReason(error);
+      // On a second machine the token line is the thing that is missing, and
+      // the registry answers a missing token with `E404 Project not found` —
+      // which reads like a wrong URL. Point at the command that explains it.
+      const missingToken = /E404|Project not found/i.test(String(error.stderr ?? ''));
       installed = false;
       write([
         '',
+        'Mislukt na goedkeuring: de dependencies zijn niet geïnstalleerd.',
         `Het project staat in ${projectPath} en je registry-token is opgeslagen.`,
         `Alleen het installeren van de dependencies is afgebroken (${reason}).`,
         '',
+        ...(missingToken
+          ? [
+              'Een 404 op deze registry betekent meestal dat er geen token wordt',
+              'meegestuurd, niet dat de URL verkeerd is. Controleer dat met:',
+              '  npx create-tetra --doctor',
+              '',
+            ]
+          : []),
         'Draai om verder te gaan:',
         `  cd ${projectPath} && npm install`,
         '',
@@ -572,6 +586,10 @@ export function formatNextSteps({ projectPath, projectName, installed = true }, 
     'Ga je deployen naar Railway of Netlify: commit ci/npmrc mee en zet daar',
     'NPM_TOKEN als build-variabele. De waarde staat in je .env. Zonder die',
     'variabele mislukt de build met een 401.',
+    '',
+    'Tweede machine of CI zonder ~/.npmrc: npx create-tetra --doctor vertelt wat',
+    'er ontbreekt en hoe je je registry-token overzet. Een E404 Project not found',
+    'bij npm ci betekent daar een ontbrekende tokenregel, niet een verkeerde URL.',
     '',
   ].join('\n');
 }
